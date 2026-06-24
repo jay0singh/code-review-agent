@@ -16,10 +16,15 @@ an AI code review, and posts the review back as a commit comment.
    ```
    GITHUB_TOKEN=ghp_xxx
    GROQ_API_KEY=gsk_xxx
+   GITHUB_WEBHOOK_SECRET=some_random_string
    ```
 
    - `GITHUB_TOKEN` needs `repo` scope (to read commits and post commit comments).
    - `GROQ_API_KEY` from https://console.groq.com.
+   - `GITHUB_WEBHOOK_SECRET` is a secret you generate yourself (e.g. `openssl rand -hex 32`)
+     and enter as the webhook **Secret** in GitHub. Used to verify incoming webhook
+     requests are actually from GitHub. If left blank, signature verification is skipped
+     (not recommended outside local testing).
 
 ## Running locally
 
@@ -50,7 +55,7 @@ https://abcd1234.ngrok-free.app/webhook
 1. Go to your repository on GitHub → **Settings** → **Webhooks** → **Add webhook**.
 2. **Payload URL**: paste the ngrok URL from above (e.g. `https://abcd1234.ngrok-free.app/webhook`).
 3. **Content type**: `application/json`.
-4. **Secret**: leave blank (not used in v1).
+4. **Secret**: paste the same value you set as `GITHUB_WEBHOOK_SECRET` in `.env`.
 5. **Which events would you like to trigger this webhook?**: select "Just the `push` event".
 6. Make sure **Active** is checked, then click **Add webhook**.
 7. Push a commit to the repo and check the **Recent Deliveries** tab on the
@@ -73,5 +78,4 @@ https://abcd1234.ngrok-free.app/webhook
 
 ## Notes
 
-- No webhook signature verification in v1.
 - LangGraph + human-in-the-loop review is planned for v2.

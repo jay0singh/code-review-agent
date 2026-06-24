@@ -1,6 +1,9 @@
+import hashlib
+import hmac
 import json
+import os
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
 from github import fetch_commit_diff, post_commit_comment
@@ -12,6 +15,7 @@ app = FastAPI()
 
 ZERO_SHA = "0" * 40
 SKIP_EXTENSIONS = (".md", ".yml", ".yaml", ".json", ".txt", ".text")
+WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
 
 def is_doc_only(added, modified):
@@ -21,11 +25,24 @@ def is_doc_only(added, modified):
     return all(f.lower().endswith(SKIP_EXTENSIONS) for f in changed_files)
 
 
+def verify_signature(body: bytes, signature: str | None):
+    if not signature or not signature.startswith("sha256="):
+        return False
+    expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+
+
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(
+    request: Request,
+    x_hub_signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
+):
     body = await request.body()
     if not body:
         return {"status": "skipped", "reason": "empty body"}
+
+    if WEBHOOK_SECRET and not verify_signature(body, x_hub_signature_256):
+        raise HTTPException(status_code=401, detail="invalid signature")
 
     try:
         payload = json.loads(body)
