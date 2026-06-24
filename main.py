@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 
@@ -21,7 +23,14 @@ def is_doc_only(added, modified):
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    payload = await request.json()
+    body = await request.body()
+    if not body:
+        return {"status": "skipped", "reason": "empty body"}
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return {"status": "skipped", "reason": "invalid json"}
 
     repo = payload.get("repository", {}).get("full_name")
     commits = payload.get("commits", [])
