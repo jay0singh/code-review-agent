@@ -60,6 +60,7 @@ https://abcd1234.ngrok-free.app/webhook
 
 1. GitHub sends a `push` event to `POST /webhook`.
 2. The agent skips the event if:
+   - the request body is empty or not valid JSON (e.g. GitHub ping deliveries),
    - it's the initial push to an empty repo (`before` is all zeros),
    - a commit has no parents (first commit on the branch),
    - all changed files are docs/config (`.md`, `.yml`, `.yaml`, `.json`, `.txt`, `.text`).
