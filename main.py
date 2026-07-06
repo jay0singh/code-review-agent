@@ -40,6 +40,20 @@ WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 store = ReviewStore()
 
 
+def branch_allowed(ref):
+    """REVIEW_BRANCHES (comma-separated, e.g. "dev,main") limits which
+    branches get push reviews; unset means all branches. Read at call time."""
+    allowed = [
+        b.strip()
+        for b in os.getenv("REVIEW_BRANCHES", "").split(",")
+        if b.strip()
+    ]
+    if not allowed:
+        return True
+    branch = (ref or "").removeprefix("refs/heads/")
+    return branch in allowed
+
+
 def is_doc_only(filenames):
     if not filenames:
         return False
@@ -91,6 +105,9 @@ async def handle_push(payload):
     repo = payload.get("repository", {}).get("full_name")
     commits = payload.get("commits", [])
     before = payload.get("before")
+
+    if not branch_allowed(payload.get("ref")):
+        return {"status": "skipped", "reason": "branch not reviewed"}
 
     if before == ZERO_SHA:
         return {"status": "skipped", "reason": "initial push"}

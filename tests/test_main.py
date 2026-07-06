@@ -28,8 +28,9 @@ def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
     return payload
 
 
-def push_payload(sha="sha1"):
+def push_payload(sha="sha1", ref="refs/heads/feature/x"):
     return {
+        "ref": ref,
         "repository": {"full_name": "owner/repo"},
         "before": "e" * 40,
         "commits": [
@@ -315,6 +316,38 @@ async def test_duplicate_push_delivery_is_skipped():
     assert first["commits"] == [{"sha": "sha1", "status": "ok"}]
     assert second["commits"] == [{"sha": "sha1", "status": "duplicate"}]
     mock_fetch.assert_called_once()
+    mock_post.assert_called_once()
+
+
+async def test_push_to_unlisted_branch_is_skipped(monkeypatch):
+    monkeypatch.setenv("REVIEW_BRANCHES", "dev,main")
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock) as mock_fetch:
+        result = await main.handle_push(push_payload(ref="refs/heads/feature/x"))
+
+    assert result == {"status": "skipped", "reason": "branch not reviewed"}
+    mock_fetch.assert_not_called()
+
+
+async def test_push_to_listed_branch_is_reviewed(monkeypatch):
+    monkeypatch.setenv("REVIEW_BRANCHES", "dev, main")
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 1)), \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_push(push_payload(ref="refs/heads/dev"))
+
+    assert result["commits"] == [{"sha": "sha1", "status": "ok"}]
+    mock_post.assert_called_once()
+
+
+async def test_no_branch_filter_reviews_all_branches():
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 1)), \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_push(push_payload(ref="refs/heads/anything"))
+
+    assert result["commits"] == [{"sha": "sha1", "status": "ok"}]
     mock_post.assert_called_once()
 
 
