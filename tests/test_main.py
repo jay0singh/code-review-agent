@@ -305,7 +305,7 @@ async def test_opened_pr_still_uses_full_diff():
 
 async def test_duplicate_push_delivery_is_skipped():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=files) as mock_fetch, \
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 1)) as mock_fetch, \
          patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
          patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
         first = await main.handle_push(push_payload())
@@ -315,6 +315,32 @@ async def test_duplicate_push_delivery_is_skipped():
     assert second["commits"] == [{"sha": "sha1", "status": "duplicate"}]
     mock_fetch.assert_called_once()
     mock_post.assert_called_once()
+
+
+async def test_merge_commit_is_skipped():
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 2)), \
+         patch("main.review_commit", new_callable=AsyncMock) as mock_review, \
+         patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_push(push_payload())
+
+    assert result["commits"] == [
+        {"sha": "sha1", "status": "skipped", "reason": "merge commit"}
+    ]
+    mock_review.assert_not_called()
+    mock_post.assert_not_called()
+
+
+async def test_root_commit_is_skipped():
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 0)), \
+         patch("main.review_commit", new_callable=AsyncMock) as mock_review:
+        result = await main.handle_push(push_payload())
+
+    assert result["commits"] == [
+        {"sha": "sha1", "status": "skipped", "reason": "no parent"}
+    ]
+    mock_review.assert_not_called()
 
 
 def test_dedupe_store_is_bounded(monkeypatch):

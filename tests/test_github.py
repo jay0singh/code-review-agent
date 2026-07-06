@@ -68,6 +68,22 @@ async def test_post_pr_review_sends_anchored_comments(mock_post):
 
 
 @patch("github.client.get", new_callable=AsyncMock)
+async def test_fetch_commit_diff_returns_files_and_parent_count(mock_get):
+    response = MagicMock()
+    response.json.return_value = {
+        "files": [{"filename": "a.py", "status": "modified", "patch": "@@"}],
+        "parents": [{"sha": "p1"}, {"sha": "p2"}],
+    }
+    response.raise_for_status.return_value = None
+    mock_get.return_value = response
+
+    files, parent_count = await github.fetch_commit_diff("owner/repo", "sha1")
+
+    assert files == [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    assert parent_count == 2
+
+
+@patch("github.client.get", new_callable=AsyncMock)
 async def test_fetch_compare_diff_maps_files(mock_get):
     response = MagicMock()
     response.json.return_value = {

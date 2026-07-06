@@ -30,10 +30,12 @@ def map_files(raw_files):
 
 
 async def fetch_commit_diff(full_name: str, sha: str):
+    """Returns (files, parent_count) — parent_count > 1 means a merge commit."""
     url = f"{GITHUB_API_URL}/repos/{full_name}/commits/{sha}"
     response = await client.get(url, headers=get_headers())
     response.raise_for_status()
-    return map_files(response.json().get("files"))
+    data = response.json()
+    return map_files(data.get("files")), len(data.get("parents") or [])
 
 
 async def fetch_compare_diff(full_name: str, base: str, head: str):

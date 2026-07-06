@@ -71,9 +71,9 @@ empty or not valid JSON (e.g. GitHub ping deliveries).
 ### Push events
 
 1. Skipped if it's the initial push to an empty repo (`before` is all
-   zeros), a commit has no parents (first commit on the branch), or all
-   changed files are docs/config (`.md`, `.yml`, `.yaml`, `.json`, `.txt`,
-   `.text`).
+   zeros), a merge commit (more than one parent), a root commit (no
+   parents), or all changed files are docs/config (`.md`, `.yml`, `.yaml`,
+   `.json`, `.txt`, `.text`).
 2. For each remaining commit, it fetches the diff from the GitHub API
    (`GET /repos/{full_name}/commits/{sha}`).
 3. The diff and commit message are sent to Groq (`llama-3.3-70b-versatile`

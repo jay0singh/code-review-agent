@@ -114,10 +114,6 @@ async def handle_push(payload):
         sha = commit["id"]
         added = commit.get("added", [])
         modified = commit.get("modified", [])
-        parents = commit.get("parents")
-
-        if parents == []:
-            continue
 
         if is_doc_only(added + modified):
             continue
@@ -128,7 +124,15 @@ async def handle_push(payload):
             continue
 
         try:
-            files = await fetch_commit_diff(repo, sha)
+            files, parent_count = await fetch_commit_diff(repo, sha)
+            if parent_count != 1:
+                reason = "merge commit" if parent_count > 1 else "no parent"
+                logger.info(
+                    "skipping commit", extra={"repo": repo, "sha": sha, "reason": reason}
+                )
+                results.append({"sha": sha, "status": "skipped", "reason": reason})
+                continue
+
             review = await review_commit(commit.get("message", ""), files)
             await post_commit_comment(repo, sha, review)
             mark_reviewed(dedupe_key)
