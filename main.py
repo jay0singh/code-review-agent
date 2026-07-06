@@ -7,9 +7,16 @@ from collections import OrderedDict
 from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
-from github import fetch_commit_diff, fetch_pr_diff, post_commit_comment, post_pr_comment
+from github import (
+    fetch_commit_diff,
+    fetch_pr_diff,
+    post_commit_comment,
+    post_pr_comment,
+    post_pr_review,
+)
+from inline_review import format_body, format_inline_comment, partition_findings
 from log_config import setup_logging
-from reviewer import review_commit
+from reviewer import review_commit, review_pr
 
 load_dotenv()
 
@@ -155,8 +162,38 @@ async def handle_pull_request(payload):
         if is_doc_only(filenames):
             return {"status": "skipped", "reason": "doc only"}
 
-        review = await review_commit(title, files)
-        await post_pr_comment(repo, pr_number, review)
+        review = await review_pr(title, files)
+
+        if "findings" in review:
+            anchored, unanchored = partition_findings(review["findings"], files)
+            comments = [
+                {
+                    "path": finding["file"],
+                    "line": finding["line"],
+                    "side": "RIGHT",
+                    "body": format_inline_comment(finding),
+                }
+                for finding in anchored
+            ]
+            body = format_body(review["summary"], unanchored)
+
+            if comments:
+                try:
+                    await post_pr_review(repo, pr_number, head_sha, body, comments)
+                except Exception:
+                    logger.exception(
+                        "inline review failed, falling back to comment",
+                        extra={"repo": repo, "pr_number": pr_number},
+                    )
+                    await post_pr_comment(
+                        repo, pr_number,
+                        format_body(review["summary"], review["findings"]),
+                    )
+            else:
+                await post_pr_comment(repo, pr_number, body)
+        else:
+            await post_pr_comment(repo, pr_number, review["text"])
+
         mark_reviewed(dedupe_key)
         logger.info(
             "pr review posted",

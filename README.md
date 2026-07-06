@@ -88,8 +88,15 @@ empty or not valid JSON (e.g. GitHub ping deliveries).
 2. Skipped if all changed files in the PR are docs/config.
 3. The full PR diff is fetched from the GitHub API
    (`GET /repos/{full_name}/pulls/{number}/files`).
-4. The diff and PR title are sent to Groq for review.
-5. The review is posted as a PR comment
+4. The diff and PR title are sent to Groq, which returns structured JSON
+   findings (`file`, `line`, `severity`, `comment`) plus a summary.
+5. Findings whose file/line actually appear in the diff are posted as
+   **inline review comments** on the Files changed tab
+   (`POST /repos/{full_name}/pulls/{number}/reviews`), tagged by severity:
+   🔴 blocker, 🟡 warning, 🔵 nit. Findings the model cites against lines
+   outside the diff are listed in the review body instead. If the model
+   fails to produce valid JSON, or GitHub rejects the inline review, the
+   review falls back to a plain PR comment
    (`POST /repos/{full_name}/issues/{number}/comments`).
 
 Note: `synchronize` re-reviews the full current diff each time, so a comment

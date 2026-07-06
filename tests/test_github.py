@@ -51,6 +51,22 @@ async def test_fetch_pr_diff_empty_pr(mock_get):
     assert mock_get.call_count == 1
 
 
+@patch("github.client.post", new_callable=AsyncMock)
+async def test_post_pr_review_sends_anchored_comments(mock_post):
+    mock_post.return_value = make_response({"id": 1})
+    comments = [{"path": "a.py", "line": 2, "side": "RIGHT", "body": "🔴 bug"}]
+
+    await github.post_pr_review("owner/repo", 7, "headsha", "summary", comments)
+
+    url = mock_post.call_args[0][0]
+    payload = mock_post.call_args.kwargs["json"]
+    assert url.endswith("/repos/owner/repo/pulls/7/reviews")
+    assert payload["commit_id"] == "headsha"
+    assert payload["event"] == "COMMENT"
+    assert payload["body"] == "summary"
+    assert payload["comments"] == comments
+
+
 def test_get_headers_reads_token_at_call_time(monkeypatch):
     # Regression: the token used to be captured at import, which happens
     # before load_dotenv() runs, producing "Bearer None" and 401s.

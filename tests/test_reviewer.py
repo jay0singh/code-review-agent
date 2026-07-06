@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import reviewer
@@ -77,3 +78,48 @@ def test_prompt_mentions_omitted_files():
 
     assert "skipped.py" in prompt
     assert "1 file(s) were omitted" in prompt
+
+
+async def test_review_pr_parses_structured_findings():
+    raw = json.dumps({
+        "summary": "One bug found.",
+        "findings": [
+            {"file": "a.py", "line": "3", "severity": "blocker", "comment": "off by one"},
+            {"file": "b.py", "line": 7, "severity": "bogus", "comment": "style"},
+            {"file": "c.py", "line": 1, "severity": "nit"},
+        ],
+    })
+    client = mock_groq(raw)
+    with patch("reviewer.AsyncGroq", return_value=client):
+        review = await reviewer.review_pr("title", [make_file("a.py", 10)])
+
+    assert review["summary"] == "One bug found."
+    # string line coerced to int
+    assert review["findings"][0] == {
+        "file": "a.py", "line": 3, "severity": "blocker", "comment": "off by one",
+    }
+    # unknown severity defaults to warning
+    assert review["findings"][1]["severity"] == "warning"
+    # finding without a comment is dropped
+    assert len(review["findings"]) == 2
+    # JSON mode requested
+    kwargs = client.chat.completions.create.call_args.kwargs
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+async def test_review_pr_falls_back_to_text_on_bad_json():
+    with patch("reviewer.AsyncGroq", return_value=mock_groq("not json at all")):
+        review = await reviewer.review_pr("title", [make_file("a.py", 10)])
+
+    assert review == {"text": "not json at all"}
+
+
+async def test_review_pr_notes_omitted_files_in_summary(monkeypatch):
+    monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
+    raw = json.dumps({"summary": "Fine.", "findings": []})
+    files = [make_file("a.py", 90), make_file("b.py", 90)]
+
+    with patch("reviewer.AsyncGroq", return_value=mock_groq(raw)):
+        review = await reviewer.review_pr("title", files)
+
+    assert "only 1 of 2 changed files were reviewed" in review["summary"]

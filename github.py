@@ -58,6 +58,21 @@ async def fetch_pr_diff(full_name: str, pr_number: int):
     return files
 
 
+async def post_pr_review(full_name: str, pr_number: int, commit_id: str,
+                         body: str, comments: list):
+    """Post a review with line-anchored comments (Files changed tab)."""
+    url = f"{GITHUB_API_URL}/repos/{full_name}/pulls/{pr_number}/reviews"
+    payload = {
+        "commit_id": commit_id,
+        "body": body,
+        "event": "COMMENT",
+        "comments": comments,
+    }
+    response = await client.post(url, headers=get_headers(), json=payload)
+    response.raise_for_status()
+    return response.json()
+
+
 async def post_pr_comment(full_name: str, pr_number: int, body: str):
     url = f"{GITHUB_API_URL}/repos/{full_name}/issues/{pr_number}/comments"
     response = await client.post(url, headers=get_headers(), json={"body": body})
