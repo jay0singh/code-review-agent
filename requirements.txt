@@ -2,4 +2,6 @@ fastapi
 uvicorn
 groq
 python-dotenv
-requests
+httpx
+pytest
+pytest-asyncio

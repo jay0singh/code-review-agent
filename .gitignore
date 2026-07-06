@@ -7,3 +7,4 @@ ngrok.exe
 ngrok
 *.log
 .DS_Store
+.pytest_cache/
