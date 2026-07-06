@@ -117,7 +117,10 @@ of patch text (default 80000, configurable via `.env`) are sent for review.
 On Groq's free tier the real constraint is the 12,000 tokens-per-minute limit,
 so a value around 30000 is recommended there. If Groq still rejects a request
 as too large (HTTP 413), the agent automatically halves the diff budget and
-retries, up to two times, before giving up.
+retries, up to two times, before giving up. If the per-minute token budget is
+exhausted instead (HTTP 429, e.g. by a multi-commit push), the agent waits —
+honoring Groq's `retry-after` header when present — and retries up to three
+times while the window refills.
 Files beyond the budget are omitted (largest diffs kept first-come), the model
 is told which ones, and the posted comment gets a footer noting how many files
 were actually reviewed. A single file bigger than the whole budget is truncated

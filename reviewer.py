@@ -1,8 +1,9 @@
+import asyncio
 import json
 import os
 
 from dotenv import load_dotenv
-from groq import APIStatusError, AsyncGroq
+from groq import APIStatusError, AsyncGroq, RateLimitError
 
 load_dotenv()
 
@@ -78,12 +79,25 @@ Don't invent issues. If nothing to flag, say so."""
     return prompt
 
 
+def rate_limit_delay(error, default):
+    """Seconds to wait before retrying a 429, from the retry-after header
+    when Groq provides one (plus a buffer while the TPM window refills)."""
+    retry_after = error.response.headers.get("retry-after")
+    try:
+        return float(retry_after) + 1
+    except (TypeError, ValueError):
+        return default
+
+
 async def complete_with_shrinking_diff(client, files, build_messages, **create_kwargs):
-    """Call Groq, halving the diff budget and retrying when the request is
-    too large for the account's tokens-per-minute limit (HTTP 413)."""
+    """Call Groq, recovering from both kinds of token-limit rejection:
+    413 (single request too large) shrinks the diff budget and retries;
+    429 (tokens-per-minute budget exhausted) waits for the window to refill
+    and retries the same request."""
     budget = MAX_DIFF_CHARS
-    attempts = 3
-    for attempt in range(attempts):
+    shrinks_left = 2
+    waits = [2, 10, 30]
+    while True:
         included, omitted = select_files(files, budget)
         try:
             completion = await client.chat.completions.create(
@@ -92,9 +106,14 @@ async def complete_with_shrinking_diff(client, files, build_messages, **create_k
                 **create_kwargs,
             )
             return completion, included, omitted
-        except APIStatusError as error:
-            if error.status_code != 413 or attempt == attempts - 1:
+        except RateLimitError as error:
+            if not waits:
                 raise
+            await asyncio.sleep(rate_limit_delay(error, waits.pop(0)))
+        except APIStatusError as error:
+            if error.status_code != 413 or not shrinks_left:
+                raise
+            shrinks_left -= 1
             budget //= 2
 
 

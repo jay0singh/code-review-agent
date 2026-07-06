@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from groq import APIStatusError
+from groq import APIStatusError, RateLimitError
 
 import reviewer
 
@@ -18,6 +18,13 @@ def server_error():
     request = httpx.Request("POST", "https://api.groq.com")
     response = httpx.Response(500, request=request)
     return APIStatusError("server error", response=response, body=None)
+
+
+def rate_limit_error(retry_after=None):
+    request = httpx.Request("POST", "https://api.groq.com")
+    headers = {"retry-after": retry_after} if retry_after else {}
+    response = httpx.Response(429, request=request, headers=headers)
+    return RateLimitError("rate limit reached", response=response, body=None)
 
 
 def make_file(name, patch_size):
@@ -148,6 +155,54 @@ async def test_non_413_error_is_not_retried():
             await reviewer.review_commit("msg", [make_file("a.py", 10)])
 
     assert client.chat.completions.create.call_count == 1
+
+
+async def test_429_waits_and_retries_without_shrinking():
+    client = mock_groq("review text")
+    client.chat.completions.create.side_effect = [
+        rate_limit_error(),
+        client.chat.completions.create.return_value,
+    ]
+
+    with patch("reviewer.AsyncGroq", return_value=client), \
+         patch("reviewer.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        review = await reviewer.review_commit("msg", [make_file("a.py", 50)])
+
+    assert "review text" in review
+    assert client.chat.completions.create.call_count == 2
+    mock_sleep.assert_called_once_with(2)
+    # same request, not shrunk
+    retry_prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "(patch truncated)" not in retry_prompt
+
+
+async def test_429_honors_retry_after_header():
+    client = mock_groq("review text")
+    client.chat.completions.create.side_effect = [
+        rate_limit_error(retry_after="7"),
+        client.chat.completions.create.return_value,
+    ]
+
+    with patch("reviewer.AsyncGroq", return_value=client), \
+         patch("reviewer.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        await reviewer.review_commit("msg", [make_file("a.py", 50)])
+
+    mock_sleep.assert_called_once_with(8.0)
+
+
+async def test_429_gives_up_after_waits_exhausted():
+    client = mock_groq()
+    client.chat.completions.create.side_effect = [
+        rate_limit_error(), rate_limit_error(), rate_limit_error(), rate_limit_error(),
+    ]
+
+    with patch("reviewer.AsyncGroq", return_value=client), \
+         patch("reviewer.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with pytest.raises(RateLimitError):
+            await reviewer.review_commit("msg", [make_file("a.py", 50)])
+
+    assert client.chat.completions.create.call_count == 4
+    assert mock_sleep.call_count == 3
 
 
 async def test_review_pr_also_shrinks_on_413(monkeypatch):
