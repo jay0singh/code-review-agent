@@ -40,18 +40,19 @@ def post_commit_comment(full_name: str, sha: str, body: str):
 
 
 def fetch_pr_diff(full_name: str, pr_number: int):
-    url = f"{GITHUB_API_URL}/repos/{full_name}/pulls/{pr_number}/files"
-    response = requests.get(url, headers=get_headers())
-    response.raise_for_status()
-    data = response.json()
+    url = f"{GITHUB_API_URL}/repos/{full_name}/pulls/{pr_number}/files?per_page=100"
 
     files = []
-    for file in data:
-        files.append({
-            "filename": file.get("filename"),
-            "status": file.get("status"),
-            "patch": file.get("patch"),
-        })
+    while url:
+        response = requests.get(url, headers=get_headers())
+        response.raise_for_status()
+        for file in response.json():
+            files.append({
+                "filename": file.get("filename"),
+                "status": file.get("status"),
+                "patch": file.get("patch"),
+            })
+        url = response.links.get("next", {}).get("url")
     return files
 
 
