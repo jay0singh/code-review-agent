@@ -117,6 +117,26 @@ async def complete_with_shrinking_diff(client, files, build_messages, **create_k
             budget //= 2
 
 
+VAGUE_MESSAGES = {
+    "wip", "fix", "fixes", "fixed", "fix bug", "bugfix", "test", "tests",
+    "testing", "update", "updates", "updated", "change", "changes", "stuff",
+    "misc", "cleanup", "temp", "commit", "final", "done", "asdf", "minor",
+}
+
+
+def lint_commit_message(message: str):
+    """Deterministic nudge for vague commit messages; returns a note to
+    append to the review, or None if the message is fine."""
+    first_line = (message or "").strip().splitlines()
+    first_line = first_line[0].strip() if first_line else ""
+    if len(first_line) < 10 or first_line.lower().rstrip(".!") in VAGUE_MESSAGES:
+        return (
+            "📝 The commit message could be more descriptive — a good subject "
+            "line says what changed and why."
+        )
+    return None
+
+
 async def review_commit(commit_message: str, files: list):
     client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
@@ -136,6 +156,9 @@ async def review_commit(commit_message: str, files: list):
             f"\n\n---\n⚠️ Large diff: only {len(included)} of "
             f"{len(files)} changed files were reviewed."
         )
+    lint_note = lint_commit_message(commit_message)
+    if lint_note:
+        review += f"\n\n---\n{lint_note}"
     return review
 
 

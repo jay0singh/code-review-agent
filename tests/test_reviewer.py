@@ -88,7 +88,7 @@ async def test_review_has_no_footer_when_everything_fits(monkeypatch):
     files = [make_file("a.py", 40)]
 
     with patch("reviewer.AsyncGroq", return_value=mock_groq()):
-        review = await reviewer.review_commit("msg", files)
+        review = await reviewer.review_commit("Add feature to the parser", files)
 
     assert review == "review text"
 
@@ -155,6 +155,38 @@ async def test_non_413_error_is_not_retried():
             await reviewer.review_commit("msg", [make_file("a.py", 10)])
 
     assert client.chat.completions.create.call_count == 1
+
+
+def test_lint_flags_vague_messages():
+    assert reviewer.lint_commit_message("wip") is not None
+    assert reviewer.lint_commit_message("Fix") is not None
+    assert reviewer.lint_commit_message("Update") is not None
+    assert reviewer.lint_commit_message("fix bug.") is not None
+    assert reviewer.lint_commit_message("") is not None
+
+
+def test_lint_accepts_descriptive_messages():
+    assert reviewer.lint_commit_message("Add retry logic to webhook handler") is None
+    assert reviewer.lint_commit_message(
+        "Fix pagination in PR diff fetching\n\nLonger body here"
+    ) is None
+
+
+async def test_vague_commit_message_gets_note_in_review():
+    with patch("reviewer.AsyncGroq", return_value=mock_groq("review text")):
+        review = await reviewer.review_commit("wip", [make_file("a.py", 10)])
+
+    assert "review text" in review
+    assert "could be more descriptive" in review
+
+
+async def test_good_commit_message_gets_no_note():
+    with patch("reviewer.AsyncGroq", return_value=mock_groq("review text")):
+        review = await reviewer.review_commit(
+            "Add retry logic to webhook handler", [make_file("a.py", 10)]
+        )
+
+    assert review == "review text"
 
 
 async def test_429_waits_and_retries_without_shrinking():
