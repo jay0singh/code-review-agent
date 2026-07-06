@@ -100,8 +100,12 @@ empty or not valid JSON (e.g. GitHub ping deliveries).
    review falls back to a plain PR comment
    (`POST /repos/{full_name}/issues/{number}/comments`).
 
-Note: `synchronize` re-reviews the full current diff each time, so a comment
-is posted on every push to the PR, not just new commits.
+Note: `synchronize` reviews **only the newly pushed changes** — the agent
+fetches the compare diff between the previous and new head
+(`GET /repos/{full_name}/compare/{before}...{after}`) and titles the review
+"(latest push)". If the push contains no content changes (e.g. a rebase), the
+review is skipped entirely. If the compare fails (e.g. after a force-push
+whose old head is gone), the full PR diff is reviewed instead.
 
 ### Diff size limit
 

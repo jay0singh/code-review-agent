@@ -67,6 +67,22 @@ async def test_post_pr_review_sends_anchored_comments(mock_post):
     assert payload["comments"] == comments
 
 
+@patch("github.client.get", new_callable=AsyncMock)
+async def test_fetch_compare_diff_maps_files(mock_get):
+    response = MagicMock()
+    response.json.return_value = {
+        "files": [{"filename": "a.py", "status": "modified", "patch": "@@"}],
+    }
+    response.raise_for_status.return_value = None
+    mock_get.return_value = response
+
+    files = await github.fetch_compare_diff("owner/repo", "sha1", "sha2")
+
+    assert files == [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    url = mock_get.call_args[0][0]
+    assert url.endswith("/repos/owner/repo/compare/sha1...sha2")
+
+
 def test_get_headers_reads_token_at_call_time(monkeypatch):
     # Regression: the token used to be captured at import, which happens
     # before load_dotenv() runs, producing "Bearer None" and 401s.

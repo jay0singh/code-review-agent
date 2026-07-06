@@ -18,20 +18,30 @@ def get_headers():
     }
 
 
+def map_files(raw_files):
+    return [
+        {
+            "filename": file.get("filename"),
+            "status": file.get("status"),
+            "patch": file.get("patch"),
+        }
+        for file in raw_files or []
+    ]
+
+
 async def fetch_commit_diff(full_name: str, sha: str):
     url = f"{GITHUB_API_URL}/repos/{full_name}/commits/{sha}"
     response = await client.get(url, headers=get_headers())
     response.raise_for_status()
-    data = response.json()
+    return map_files(response.json().get("files"))
 
-    files = []
-    for file in data.get("files", []):
-        files.append({
-            "filename": file.get("filename"),
-            "status": file.get("status"),
-            "patch": file.get("patch"),
-        })
-    return files
+
+async def fetch_compare_diff(full_name: str, base: str, head: str):
+    """Diff between two commits — used to review only what a push added."""
+    url = f"{GITHUB_API_URL}/repos/{full_name}/compare/{base}...{head}"
+    response = await client.get(url, headers=get_headers())
+    response.raise_for_status()
+    return map_files(response.json().get("files"))
 
 
 async def post_commit_comment(full_name: str, sha: str, body: str):
@@ -48,12 +58,7 @@ async def fetch_pr_diff(full_name: str, pr_number: int):
     while url:
         response = await client.get(url, headers=get_headers())
         response.raise_for_status()
-        for file in response.json():
-            files.append({
-                "filename": file.get("filename"),
-                "status": file.get("status"),
-                "patch": file.get("patch"),
-            })
+        files.extend(map_files(response.json()))
         url = response.links.get("next", {}).get("url")
     return files
 

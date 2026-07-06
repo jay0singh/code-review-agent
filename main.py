@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from github import (
     fetch_commit_diff,
+    fetch_compare_diff,
     fetch_pr_diff,
     post_commit_comment,
     post_pr_comment,
@@ -155,8 +156,29 @@ async def handle_pull_request(payload):
     if already_reviewed(dedupe_key):
         return {"status": "skipped", "reason": "duplicate delivery"}
 
+    before = payload.get("before")
+    after = payload.get("after")
+
     try:
-        files = await fetch_pr_diff(repo, pr_number)
+        files = None
+        scope = None
+        if action == "synchronize" and before and after:
+            try:
+                files = await fetch_compare_diff(repo, before, after)
+                scope = "latest push"
+            except Exception:
+                logger.exception(
+                    "compare diff failed, falling back to full pr diff",
+                    extra={"repo": repo, "pr_number": pr_number},
+                )
+            else:
+                if not files:
+                    return {"status": "skipped", "reason": "no changes in push"}
+
+        if files is None:
+            files = await fetch_pr_diff(repo, pr_number)
+            scope = None
+
         filenames = [f["filename"] for f in files if f.get("filename")]
 
         if is_doc_only(filenames):
@@ -175,7 +197,7 @@ async def handle_pull_request(payload):
                 }
                 for finding in anchored
             ]
-            body = format_body(review["summary"], unanchored)
+            body = format_body(review["summary"], unanchored, scope)
 
             if comments:
                 try:
@@ -187,7 +209,7 @@ async def handle_pull_request(payload):
                     )
                     await post_pr_comment(
                         repo, pr_number,
-                        format_body(review["summary"], review["findings"]),
+                        format_body(review["summary"], review["findings"], scope),
                     )
             else:
                 await post_pr_comment(repo, pr_number, body)

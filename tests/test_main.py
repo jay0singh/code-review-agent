@@ -10,8 +10,8 @@ def clear_dedupe_store():
     main._seen_reviews.clear()
 
 
-def pr_payload(action="opened", draft=False, head_sha="abc123"):
-    return {
+def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
+    payload = {
         "action": action,
         "number": 7,
         "repository": {"full_name": "owner/repo"},
@@ -21,6 +21,10 @@ def pr_payload(action="opened", draft=False, head_sha="abc123"):
             "head": {"sha": head_sha},
         },
     }
+    if before:
+        payload["before"] = before
+        payload["after"] = head_sha
+    return payload
 
 
 def push_payload(sha="sha1"):
@@ -193,6 +197,63 @@ async def test_failed_pr_review_can_be_retried():
     assert first["status"] == "failed"
     assert second == {"status": "ok"}
     mock_comment.assert_called_once()
+
+
+async def test_synchronize_reviews_only_the_delta():
+    with patch("main.fetch_compare_diff", new_callable=AsyncMock, return_value=FILES) as mock_compare, \
+         patch("main.fetch_pr_diff", new_callable=AsyncMock) as mock_full, \
+         patch("main.review_pr", new_callable=AsyncMock, return_value=SUMMARY_ONLY), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_comment:
+        result = await main.handle_pull_request(
+            pr_payload(action="synchronize", head_sha="new1", before="old1")
+        )
+
+    assert result == {"status": "ok"}
+    mock_compare.assert_called_once_with("owner/repo", "old1", "new1")
+    mock_full.assert_not_called()
+    body = mock_comment.call_args[0][2]
+    assert "(latest push)" in body
+
+
+async def test_synchronize_with_empty_delta_is_skipped():
+    with patch("main.fetch_compare_diff", new_callable=AsyncMock, return_value=[]), \
+         patch("main.fetch_pr_diff", new_callable=AsyncMock) as mock_full, \
+         patch("main.review_pr", new_callable=AsyncMock) as mock_review:
+        result = await main.handle_pull_request(
+            pr_payload(action="synchronize", head_sha="new1", before="old1")
+        )
+
+    assert result == {"status": "skipped", "reason": "no changes in push"}
+    mock_full.assert_not_called()
+    mock_review.assert_not_called()
+
+
+async def test_synchronize_falls_back_to_full_diff_when_compare_fails():
+    with patch("main.fetch_compare_diff", new_callable=AsyncMock,
+               side_effect=RuntimeError("404 force push")), \
+         patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES) as mock_full, \
+         patch("main.review_pr", new_callable=AsyncMock, return_value=SUMMARY_ONLY), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_comment:
+        result = await main.handle_pull_request(
+            pr_payload(action="synchronize", head_sha="new1", before="old1")
+        )
+
+    assert result == {"status": "ok"}
+    mock_full.assert_called_once()
+    body = mock_comment.call_args[0][2]
+    assert "(latest push)" not in body
+
+
+async def test_opened_pr_still_uses_full_diff():
+    with patch("main.fetch_compare_diff", new_callable=AsyncMock) as mock_compare, \
+         patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES) as mock_full, \
+         patch("main.review_pr", new_callable=AsyncMock, return_value=SUMMARY_ONLY), \
+         patch("main.post_pr_comment", new_callable=AsyncMock):
+        result = await main.handle_pull_request(pr_payload(action="opened"))
+
+    assert result == {"status": "ok"}
+    mock_compare.assert_not_called()
+    mock_full.assert_called_once()
 
 
 async def test_duplicate_push_delivery_is_skipped():

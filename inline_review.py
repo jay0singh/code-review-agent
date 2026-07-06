@@ -52,10 +52,12 @@ def format_inline_comment(finding):
     return f"{emoji} **{finding['severity'].capitalize()}**: {finding['comment']}"
 
 
-def format_body(summary, listed_findings):
+def format_body(summary, listed_findings, scope=None):
     """Review body: the summary, plus any findings that are listed in the
-    body instead of anchored inline."""
-    body = f"🤖 AI PR Review\n\n{summary}"
+    body instead of anchored inline. `scope` marks partial reviews, e.g.
+    "latest push" when only the newest commits were reviewed."""
+    title = "🤖 AI PR Review" + (f" ({scope})" if scope else "")
+    body = f"{title}\n\n{summary}"
     if listed_findings:
         notes = "\n".join(
             "- **"
