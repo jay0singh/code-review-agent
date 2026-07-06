@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -10,6 +11,8 @@ from github import fetch_commit_diff, fetch_pr_diff, post_commit_comment, post_p
 from reviewer import review_commit
 
 load_dotenv()
+
+logger = logging.getLogger("commit_review_agent")
 
 app = FastAPI()
 
@@ -64,6 +67,7 @@ def handle_push(payload):
     if before == ZERO_SHA:
         return {"status": "skipped", "reason": "initial push"}
 
+    results = []
     for commit in commits:
         sha = commit["id"]
         added = commit.get("added", [])
@@ -76,11 +80,16 @@ def handle_push(payload):
         if is_doc_only(added + modified):
             continue
 
-        files = fetch_commit_diff(repo, sha)
-        review = review_commit(commit.get("message", ""), files)
-        post_commit_comment(repo, sha, review)
+        try:
+            files = fetch_commit_diff(repo, sha)
+            review = review_commit(commit.get("message", ""), files)
+            post_commit_comment(repo, sha, review)
+            results.append({"sha": sha, "status": "ok"})
+        except Exception:
+            logger.exception("Failed to review commit %s", sha)
+            results.append({"sha": sha, "status": "failed"})
 
-    return {"status": "ok"}
+    return {"status": "ok", "commits": results}
 
 
 def handle_pull_request(payload):
@@ -93,14 +102,18 @@ def handle_pull_request(payload):
     pr_number = payload.get("number")
     title = pr.get("title", "")
 
-    files = fetch_pr_diff(repo, pr_number)
-    filenames = [f["filename"] for f in files if f.get("filename")]
+    try:
+        files = fetch_pr_diff(repo, pr_number)
+        filenames = [f["filename"] for f in files if f.get("filename")]
 
-    if is_doc_only(filenames):
-        return {"status": "skipped", "reason": "doc only"}
+        if is_doc_only(filenames):
+            return {"status": "skipped", "reason": "doc only"}
 
-    review = review_commit(title, files)
-    post_pr_comment(repo, pr_number, review)
+        review = review_commit(title, files)
+        post_pr_comment(repo, pr_number, review)
+    except Exception:
+        logger.exception("Failed to review PR #%s", pr_number)
+        return {"status": "failed", "pr_number": pr_number}
 
     return {"status": "ok"}
 
