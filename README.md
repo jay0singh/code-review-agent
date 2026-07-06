@@ -134,6 +134,24 @@ is told which ones, and the posted comment gets a footer noting how many files
 were actually reviewed. A single file bigger than the whole budget is truncated
 rather than skipped.
 
+## Running with Docker
+
+Build and run with compose (reads keys from `.env`):
+
+```
+docker compose up --build -d
+docker compose logs -f agent
+```
+
+The container listens on port 8001, same as the local setup, so the ngrok
+tunnel command doesn't change. The dedupe database lives on a named volume
+(`commit_review_dedupe`), so already-reviewed commits stay remembered across
+rebuilds and restarts.
+
+To deploy on a host with a public URL (Fly.io, Railway, Render, a VPS), build
+from the same Dockerfile, supply the `.env` values as secrets, and point the
+GitHub webhook at `https://<your-host>/webhook` — no ngrok needed.
+
 ## Notes
 
 - LangGraph + human-in-the-loop review is planned for v2.

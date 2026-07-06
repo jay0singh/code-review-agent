@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+**/__pycache__
+*.pyc
+.env
+.pytest_cache
+tests
+conftest.py
+pytest.ini
+ngrok.exe
+ngrok
+reviewed.db
+*.log
+README.md
