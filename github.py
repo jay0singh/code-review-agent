@@ -1,16 +1,19 @@
 import os
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 GITHUB_API_URL = "https://api.github.com"
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 client = httpx.AsyncClient(timeout=30)
 
 
 def get_headers():
+    # Read at call time: module import can happen before .env is loaded.
     return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
         "Accept": "application/vnd.github.v3+json",
     }
 

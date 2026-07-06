@@ -1,7 +1,10 @@
 import os
+
+from dotenv import load_dotenv
 from groq import AsyncGroq
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+load_dotenv()
+
 MODEL = "llama-3.3-70b-versatile"
 MAX_DIFF_CHARS = int(os.getenv("MAX_DIFF_CHARS", "80000"))
 
@@ -75,7 +78,7 @@ Don't invent issues. If nothing to flag, say so."""
 
 
 async def review_commit(commit_message: str, files: list):
-    client = AsyncGroq(api_key=GROQ_API_KEY)
+    client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
     included, omitted = select_files(files)
     prompt = build_prompt(commit_message, included, omitted)

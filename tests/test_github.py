@@ -49,3 +49,13 @@ async def test_fetch_pr_diff_empty_pr(mock_get):
 
     assert files == []
     assert mock_get.call_count == 1
+
+
+def test_get_headers_reads_token_at_call_time(monkeypatch):
+    # Regression: the token used to be captured at import, which happens
+    # before load_dotenv() runs, producing "Bearer None" and 401s.
+    monkeypatch.setenv("GITHUB_TOKEN", "tok-set-after-import")
+
+    headers = github.get_headers()
+
+    assert headers["Authorization"] == "Bearer tok-set-after-import"
