@@ -102,6 +102,9 @@ def handle_pull_request(payload):
     pr_number = payload.get("number")
     title = pr.get("title", "")
 
+    if pr.get("draft"):
+        return {"status": "skipped", "reason": "draft pr"}
+
     try:
         files = fetch_pr_diff(repo, pr_number)
         filenames = [f["filename"] for f in files if f.get("filename")]
