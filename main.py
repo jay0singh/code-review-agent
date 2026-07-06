@@ -2,11 +2,11 @@ import hashlib
 import hmac
 import json
 import os
-from collections import OrderedDict
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
+from dedupe import ReviewStore
 from github import (
     fetch_commit_diff,
     fetch_compare_diff,
@@ -36,22 +36,8 @@ PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review")
 WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
 # Dedupe store so redelivered webhooks don't post duplicate comments.
-# In-memory: resets on restart, bounded so it can't grow forever.
-MAX_SEEN_KEYS = 1000
-_seen_reviews = OrderedDict()
-
-
-def already_reviewed(key: str) -> bool:
-    if key in _seen_reviews:
-        _seen_reviews.move_to_end(key)
-        return True
-    return False
-
-
-def mark_reviewed(key: str):
-    _seen_reviews[key] = None
-    if len(_seen_reviews) > MAX_SEEN_KEYS:
-        _seen_reviews.popitem(last=False)
+# SQLite-backed (DEDUPE_DB, default reviewed.db) so it survives restarts.
+store = ReviewStore()
 
 
 def is_doc_only(filenames):
@@ -119,7 +105,7 @@ async def handle_push(payload):
             continue
 
         dedupe_key = f"{repo}@{sha}"
-        if already_reviewed(dedupe_key):
+        if store.already_reviewed(dedupe_key):
             results.append({"sha": sha, "status": "duplicate"})
             continue
 
@@ -135,7 +121,7 @@ async def handle_push(payload):
 
             review = await review_commit(commit.get("message", ""), files)
             await post_commit_comment(repo, sha, review)
-            mark_reviewed(dedupe_key)
+            store.mark_reviewed(dedupe_key)
             logger.info("commit review posted", extra={"repo": repo, "sha": sha})
             results.append({"sha": sha, "status": "ok"})
         except Exception:
@@ -162,7 +148,7 @@ async def handle_pull_request(payload):
 
     head_sha = pr.get("head", {}).get("sha")
     dedupe_key = f"{repo}#{pr_number}@{head_sha}"
-    if already_reviewed(dedupe_key):
+    if store.already_reviewed(dedupe_key):
         return {"status": "skipped", "reason": "duplicate delivery"}
 
     before = payload.get("before")
@@ -197,7 +183,7 @@ async def handle_pull_request(payload):
 
         if "findings" in review:
             if not worth_posting(review["findings"]):
-                mark_reviewed(dedupe_key)
+                store.mark_reviewed(dedupe_key)
                 logger.info(
                     "review suppressed, nothing above min severity",
                     extra={
@@ -237,7 +223,7 @@ async def handle_pull_request(payload):
         else:
             await post_pr_comment(repo, pr_number, review["text"])
 
-        mark_reviewed(dedupe_key)
+        store.mark_reviewed(dedupe_key)
         logger.info(
             "pr review posted",
             extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},

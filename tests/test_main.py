@@ -3,11 +3,12 @@
 import pytest
 
 import main
+from dedupe import ReviewStore
 
 
 @pytest.fixture(autouse=True)
-def clear_dedupe_store():
-    main._seen_reviews.clear()
+def clear_dedupe_store(monkeypatch):
+    monkeypatch.setattr(main, "store", ReviewStore(":memory:"))
 
 
 def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
@@ -343,13 +344,3 @@ async def test_root_commit_is_skipped():
     mock_review.assert_not_called()
 
 
-def test_dedupe_store_is_bounded(monkeypatch):
-    monkeypatch.setattr(main, "MAX_SEEN_KEYS", 2)
-
-    main.mark_reviewed("k1")
-    main.mark_reviewed("k2")
-    main.mark_reviewed("k3")
-
-    assert not main.already_reviewed("k1")
-    assert main.already_reviewed("k2")
-    assert main.already_reviewed("k3")
