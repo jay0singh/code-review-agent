@@ -1,7 +1,6 @@
 import hashlib
 import hmac
 import json
-import logging
 import os
 from collections import OrderedDict
 
@@ -9,11 +8,12 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
 from github import fetch_commit_diff, fetch_pr_diff, post_commit_comment, post_pr_comment
+from log_config import setup_logging
 from reviewer import review_commit
 
 load_dotenv()
 
-logger = logging.getLogger("commit_review_agent")
+logger = setup_logging()
 
 app = FastAPI()
 
@@ -59,18 +59,28 @@ async def webhook(
     request: Request,
     x_hub_signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
     x_github_event: str | None = Header(default=None, alias="X-GitHub-Event"),
+    x_github_delivery: str | None = Header(default=None, alias="X-GitHub-Delivery"),
 ):
     body = await request.body()
     if not body:
         return {"status": "skipped", "reason": "empty body"}
 
     if WEBHOOK_SECRET and not verify_signature(body, x_hub_signature_256):
+        logger.warning(
+            "invalid webhook signature",
+            extra={"event": x_github_event, "delivery_id": x_github_delivery},
+        )
         raise HTTPException(status_code=401, detail="invalid signature")
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
         return {"status": "skipped", "reason": "invalid json"}
+
+    logger.info(
+        "webhook received",
+        extra={"event": x_github_event, "delivery_id": x_github_delivery},
+    )
 
     if x_github_event == "pull_request":
         return await handle_pull_request(payload)
@@ -109,9 +119,12 @@ async def handle_push(payload):
             review = await review_commit(commit.get("message", ""), files)
             await post_commit_comment(repo, sha, review)
             mark_reviewed(dedupe_key)
+            logger.info("commit review posted", extra={"repo": repo, "sha": sha})
             results.append({"sha": sha, "status": "ok"})
         except Exception:
-            logger.exception("Failed to review commit %s", sha)
+            logger.exception(
+                "commit review failed", extra={"repo": repo, "sha": sha}
+            )
             results.append({"sha": sha, "status": "failed"})
 
     return {"status": "ok", "commits": results}
@@ -145,8 +158,15 @@ async def handle_pull_request(payload):
         review = await review_commit(title, files)
         await post_pr_comment(repo, pr_number, review)
         mark_reviewed(dedupe_key)
+        logger.info(
+            "pr review posted",
+            extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
+        )
     except Exception:
-        logger.exception("Failed to review PR #%s", pr_number)
+        logger.exception(
+            "pr review failed",
+            extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
+        )
         return {"status": "failed", "pr_number": pr_number}
 
     return {"status": "ok"}
