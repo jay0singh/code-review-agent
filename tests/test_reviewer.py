@@ -96,6 +96,16 @@ def test_prompt_mentions_omitted_files():
     assert "1 file(s) were omitted" in prompt
 
 
+async def test_model_is_env_configurable(monkeypatch):
+    monkeypatch.setattr(reviewer, "REVIEW_MODEL", "custom-model")
+    client = mock_groq()
+
+    with patch("reviewer.AsyncGroq", return_value=client):
+        await reviewer.review_commit("msg", [make_file("a.py", 10)])
+
+    assert client.chat.completions.create.call_args.kwargs["model"] == "custom-model"
+
+
 async def test_413_shrinks_diff_and_retries(monkeypatch):
     monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
     files = [make_file("a.py", 90)]

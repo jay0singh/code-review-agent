@@ -6,7 +6,7 @@ from groq import APIStatusError, AsyncGroq
 
 load_dotenv()
 
-MODEL = "llama-3.3-70b-versatile"
+REVIEW_MODEL = os.getenv("REVIEW_MODEL", "llama-3.3-70b-versatile")
 MAX_DIFF_CHARS = int(os.getenv("MAX_DIFF_CHARS", "80000"))
 
 SYSTEM_PROMPT = "You are a senior code reviewer"
@@ -87,7 +87,7 @@ async def complete_with_shrinking_diff(client, files, build_messages, **create_k
         included, omitted = select_files(files, budget)
         try:
             completion = await client.chat.completions.create(
-                model=MODEL,
+                model=REVIEW_MODEL,
                 messages=build_messages(included, omitted),
                 **create_kwargs,
             )
