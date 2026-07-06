@@ -3,6 +3,7 @@ from inline_review import (
     format_body,
     format_inline_comment,
     partition_findings,
+    worth_posting,
 )
 
 PATCH = "@@ -1,3 +1,4 @@\n line1\n+line2\n line3\n line4"
@@ -85,3 +86,24 @@ def test_format_body_without_findings_is_just_summary():
     body = format_body("Overall fine.", [])
 
     assert body == "🤖 AI PR Review\n\nOverall fine."
+
+
+def test_worth_posting_default_threshold():
+    assert not worth_posting([])
+    assert not worth_posting([make_finding(severity="nit")])
+    assert worth_posting([make_finding(severity="warning")])
+    assert worth_posting([make_finding(severity="nit"), make_finding(severity="blocker")])
+
+
+def test_worth_posting_respects_env_threshold(monkeypatch):
+    monkeypatch.setenv("MIN_POST_SEVERITY", "blocker")
+    assert not worth_posting([make_finding(severity="warning")])
+
+    monkeypatch.setenv("MIN_POST_SEVERITY", "nit")
+    assert worth_posting([make_finding(severity="nit")])
+
+
+def test_worth_posting_invalid_threshold_falls_back_to_warning(monkeypatch):
+    monkeypatch.setenv("MIN_POST_SEVERITY", "bogus")
+    assert not worth_posting([make_finding(severity="nit")])
+    assert worth_posting([make_finding(severity="warning")])

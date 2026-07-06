@@ -1,8 +1,21 @@
+import os
 import re
 
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 SEVERITY_EMOJI = {"blocker": "🔴", "warning": "🟡", "nit": "🔵"}
+SEVERITY_RANK = {"nit": 0, "warning": 1, "blocker": 2}
+
+
+def worth_posting(findings):
+    """Post only when at least one finding meets MIN_POST_SEVERITY (default
+    "warning"). A bot that stays quiet when it has nothing significant to
+    say earns more trust. Read at call time so .env is loaded by then."""
+    threshold = SEVERITY_RANK.get(os.getenv("MIN_POST_SEVERITY", "warning"), 1)
+    return any(
+        SEVERITY_RANK.get(finding.get("severity"), 1) >= threshold
+        for finding in findings
+    )
 
 
 def commentable_lines(patch):

@@ -15,7 +15,12 @@ from github import (
     post_pr_comment,
     post_pr_review,
 )
-from inline_review import format_body, format_inline_comment, partition_findings
+from inline_review import (
+    format_body,
+    format_inline_comment,
+    partition_findings,
+    worth_posting,
+)
 from log_config import setup_logging
 from reviewer import review_commit, review_pr
 
@@ -187,6 +192,18 @@ async def handle_pull_request(payload):
         review = await review_pr(title, files)
 
         if "findings" in review:
+            if not worth_posting(review["findings"]):
+                mark_reviewed(dedupe_key)
+                logger.info(
+                    "review suppressed, nothing above min severity",
+                    extra={
+                        "repo": repo,
+                        "pr_number": pr_number,
+                        "findings": len(review["findings"]),
+                    },
+                )
+                return {"status": "ok", "review": "suppressed"}
+
             anchored, unanchored = partition_findings(review["findings"], files)
             comments = [
                 {

@@ -91,7 +91,10 @@ empty or not valid JSON (e.g. GitHub ping deliveries).
    (`GET /repos/{full_name}/pulls/{number}/files`).
 4. The diff and PR title are sent to Groq, which returns structured JSON
    findings (`file`, `line`, `severity`, `comment`) plus a summary.
-5. Findings whose file/line actually appear in the diff are posted as
+5. If no finding reaches `MIN_POST_SEVERITY` (default `warning`), the review
+   is suppressed entirely — the bot stays quiet rather than posting
+   "looks good" noise. Set `MIN_POST_SEVERITY=nit` to post everything.
+6. Findings whose file/line actually appear in the diff are posted as
    **inline review comments** on the Files changed tab
    (`POST /repos/{full_name}/pulls/{number}/reviews`), tagged by severity:
    🔴 blocker, 🟡 warning, 🔵 nit. Findings the model cites against lines
