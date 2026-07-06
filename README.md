@@ -57,7 +57,8 @@ https://abcd1234.ngrok-free.app/webhook
 3. **Content type**: `application/json`.
 4. **Secret**: paste the same value you set as `GITHUB_WEBHOOK_SECRET` in `.env`.
 5. **Which events would you like to trigger this webhook?**: select "Let me select individual events"
-   and check both **Pushes** and **Pull requests**.
+   and check **Pushes**, **Pull requests**, and **Issue comments** (the last
+   one enables the `/rereview` command).
 6. Make sure **Active** is checked, then click **Add webhook**.
 7. Push a commit to the repo and check the **Recent Deliveries** tab on the
    webhook settings page to confirm it was received successfully.
@@ -109,6 +110,13 @@ fetches the compare diff between the previous and new head
 "(latest push)". If the push contains no content changes (e.g. a rebase), the
 review is skipped entirely. If the compare fails (e.g. after a force-push
 whose old head is gone), the full PR diff is reviewed instead.
+
+### /rereview command
+
+Comment `/rereview` on any pull request to force a fresh review of the full
+current diff. It bypasses both duplicate-delivery detection and severity
+quietness — an explicit request always gets a posted answer, even if the
+verdict is "nothing to flag".
 
 ### Diff size limit
 

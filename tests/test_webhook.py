@@ -52,3 +52,14 @@ def test_push_with_no_commits_returns_ok(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "commits": []}
+
+
+def test_unhandled_event_is_skipped(monkeypatch):
+    monkeypatch.setattr(main, "WEBHOOK_SECRET", None)
+
+    response = client.post(
+        "/webhook", content=b"{}", headers={"X-GitHub-Event": "star"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "skipped", "reason": "event 'star' not handled"}
