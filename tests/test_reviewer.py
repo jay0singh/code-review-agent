@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import reviewer
 
@@ -9,9 +9,9 @@ def make_file(name, patch_size):
 
 def mock_groq(review_text="review text"):
     client = MagicMock()
-    client.chat.completions.create.return_value.choices = [
-        MagicMock(message=MagicMock(content=review_text))
-    ]
+    completion = MagicMock()
+    completion.choices = [MagicMock(message=MagicMock(content=review_text))]
+    client.chat.completions.create = AsyncMock(return_value=completion)
     return client
 
 
@@ -48,23 +48,23 @@ def test_select_files_truncates_single_huge_file(monkeypatch):
     assert len(included[0]["patch"]) < 500
 
 
-def test_review_appends_footer_when_files_omitted(monkeypatch):
+async def test_review_appends_footer_when_files_omitted(monkeypatch):
     monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
     files = [make_file("a.py", 90), make_file("b.py", 90)]
 
-    with patch("reviewer.Groq", return_value=mock_groq()):
-        review = reviewer.review_commit("msg", files)
+    with patch("reviewer.AsyncGroq", return_value=mock_groq()):
+        review = await reviewer.review_commit("msg", files)
 
     assert "review text" in review
     assert "only 1 of 2 changed files were reviewed" in review
 
 
-def test_review_has_no_footer_when_everything_fits(monkeypatch):
+async def test_review_has_no_footer_when_everything_fits(monkeypatch):
     monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
     files = [make_file("a.py", 40)]
 
-    with patch("reviewer.Groq", return_value=mock_groq()):
-        review = reviewer.review_commit("msg", files)
+    with patch("reviewer.AsyncGroq", return_value=mock_groq()):
+        review = await reviewer.review_commit("msg", files)
 
     assert review == "review text"
 

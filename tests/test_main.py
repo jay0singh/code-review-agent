@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -33,28 +33,28 @@ def push_payload(sha="sha1"):
     }
 
 
-def test_draft_pr_is_skipped():
-    with patch("main.fetch_pr_diff") as mock_fetch:
-        result = main.handle_pull_request(pr_payload(draft=True))
+async def test_draft_pr_is_skipped():
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock) as mock_fetch:
+        result = await main.handle_pull_request(pr_payload(draft=True))
 
     assert result == {"status": "skipped", "reason": "draft pr"}
     mock_fetch.assert_not_called()
 
 
-def test_unhandled_action_is_skipped():
-    with patch("main.fetch_pr_diff") as mock_fetch:
-        result = main.handle_pull_request(pr_payload(action="closed"))
+async def test_unhandled_action_is_skipped():
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock) as mock_fetch:
+        result = await main.handle_pull_request(pr_payload(action="closed"))
 
     assert result["status"] == "skipped"
     mock_fetch.assert_not_called()
 
 
-def test_ready_pr_is_reviewed():
+async def test_ready_pr_is_reviewed():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_pr_diff", return_value=files) as mock_fetch, \
-         patch("main.review_commit", return_value="review text") as mock_review, \
-         patch("main.post_pr_comment") as mock_post:
-        result = main.handle_pull_request(pr_payload())
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=files) as mock_fetch, \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review text") as mock_review, \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_pull_request(pr_payload())
 
     assert result == {"status": "ok"}
     mock_fetch.assert_called_once_with("owner/repo", 7)
@@ -62,34 +62,34 @@ def test_ready_pr_is_reviewed():
     mock_post.assert_called_once_with("owner/repo", 7, "review text")
 
 
-def test_ready_for_review_action_triggers_review():
+async def test_ready_for_review_action_triggers_review():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_pr_diff", return_value=files), \
-         patch("main.review_commit", return_value="review text"), \
-         patch("main.post_pr_comment") as mock_post:
-        result = main.handle_pull_request(pr_payload(action="ready_for_review"))
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=files), \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review text"), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_pull_request(pr_payload(action="ready_for_review"))
 
     assert result == {"status": "ok"}
     mock_post.assert_called_once()
 
 
-def test_doc_only_pr_is_skipped():
+async def test_doc_only_pr_is_skipped():
     files = [{"filename": "README.md", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_pr_diff", return_value=files), \
-         patch("main.review_commit") as mock_review:
-        result = main.handle_pull_request(pr_payload())
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=files), \
+         patch("main.review_commit", new_callable=AsyncMock) as mock_review:
+        result = await main.handle_pull_request(pr_payload())
 
     assert result == {"status": "skipped", "reason": "doc only"}
     mock_review.assert_not_called()
 
 
-def test_duplicate_pr_delivery_is_skipped():
+async def test_duplicate_pr_delivery_is_skipped():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_pr_diff", return_value=files) as mock_fetch, \
-         patch("main.review_commit", return_value="review"), \
-         patch("main.post_pr_comment") as mock_post:
-        first = main.handle_pull_request(pr_payload())
-        second = main.handle_pull_request(pr_payload())
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=files) as mock_fetch, \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_post:
+        first = await main.handle_pull_request(pr_payload())
+        second = await main.handle_pull_request(pr_payload())
 
     assert first == {"status": "ok"}
     assert second == {"status": "skipped", "reason": "duplicate delivery"}
@@ -97,13 +97,13 @@ def test_duplicate_pr_delivery_is_skipped():
     mock_post.assert_called_once()
 
 
-def test_pr_with_new_head_sha_is_reviewed_again():
+async def test_pr_with_new_head_sha_is_reviewed_again():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_pr_diff", return_value=files), \
-         patch("main.review_commit", return_value="review"), \
-         patch("main.post_pr_comment") as mock_post:
-        main.handle_pull_request(pr_payload(head_sha="abc123"))
-        result = main.handle_pull_request(
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=files), \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_post:
+        await main.handle_pull_request(pr_payload(head_sha="abc123"))
+        result = await main.handle_pull_request(
             pr_payload(action="synchronize", head_sha="def456")
         )
 
@@ -111,26 +111,27 @@ def test_pr_with_new_head_sha_is_reviewed_again():
     assert mock_post.call_count == 2
 
 
-def test_failed_pr_review_can_be_retried():
+async def test_failed_pr_review_can_be_retried():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_pr_diff", return_value=files), \
-         patch("main.review_commit", side_effect=[RuntimeError("groq down"), "review"]), \
-         patch("main.post_pr_comment") as mock_post:
-        first = main.handle_pull_request(pr_payload())
-        second = main.handle_pull_request(pr_payload())
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=files), \
+         patch("main.review_commit", new_callable=AsyncMock,
+               side_effect=[RuntimeError("groq down"), "review"]), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_post:
+        first = await main.handle_pull_request(pr_payload())
+        second = await main.handle_pull_request(pr_payload())
 
     assert first["status"] == "failed"
     assert second == {"status": "ok"}
     mock_post.assert_called_once()
 
 
-def test_duplicate_push_delivery_is_skipped():
+async def test_duplicate_push_delivery_is_skipped():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
-    with patch("main.fetch_commit_diff", return_value=files) as mock_fetch, \
-         patch("main.review_commit", return_value="review"), \
-         patch("main.post_commit_comment") as mock_post:
-        first = main.handle_push(push_payload())
-        second = main.handle_push(push_payload())
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=files) as mock_fetch, \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
+        first = await main.handle_push(push_payload())
+        second = await main.handle_push(push_payload())
 
     assert first["commits"] == [{"sha": "sha1", "status": "ok"}]
     assert second["commits"] == [{"sha": "sha1", "status": "duplicate"}]

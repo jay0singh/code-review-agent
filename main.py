@@ -73,12 +73,12 @@ async def webhook(
         return {"status": "skipped", "reason": "invalid json"}
 
     if x_github_event == "pull_request":
-        return handle_pull_request(payload)
+        return await handle_pull_request(payload)
 
-    return handle_push(payload)
+    return await handle_push(payload)
 
 
-def handle_push(payload):
+async def handle_push(payload):
     repo = payload.get("repository", {}).get("full_name")
     commits = payload.get("commits", [])
     before = payload.get("before")
@@ -105,9 +105,9 @@ def handle_push(payload):
             continue
 
         try:
-            files = fetch_commit_diff(repo, sha)
-            review = review_commit(commit.get("message", ""), files)
-            post_commit_comment(repo, sha, review)
+            files = await fetch_commit_diff(repo, sha)
+            review = await review_commit(commit.get("message", ""), files)
+            await post_commit_comment(repo, sha, review)
             mark_reviewed(dedupe_key)
             results.append({"sha": sha, "status": "ok"})
         except Exception:
@@ -117,7 +117,7 @@ def handle_push(payload):
     return {"status": "ok", "commits": results}
 
 
-def handle_pull_request(payload):
+async def handle_pull_request(payload):
     action = payload.get("action")
     if action not in PR_ACTIONS:
         return {"status": "skipped", "reason": f"action '{action}' not handled"}
@@ -136,14 +136,14 @@ def handle_pull_request(payload):
         return {"status": "skipped", "reason": "duplicate delivery"}
 
     try:
-        files = fetch_pr_diff(repo, pr_number)
+        files = await fetch_pr_diff(repo, pr_number)
         filenames = [f["filename"] for f in files if f.get("filename")]
 
         if is_doc_only(filenames):
             return {"status": "skipped", "reason": "doc only"}
 
-        review = review_commit(title, files)
-        post_pr_comment(repo, pr_number, review)
+        review = await review_commit(title, files)
+        await post_pr_comment(repo, pr_number, review)
         mark_reviewed(dedupe_key)
     except Exception:
         logger.exception("Failed to review PR #%s", pr_number)

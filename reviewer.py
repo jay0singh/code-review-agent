@@ -1,5 +1,5 @@
 import os
-from groq import Groq
+from groq import AsyncGroq
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL = "llama-3.3-70b-versatile"
@@ -74,13 +74,13 @@ Don't invent issues. If nothing to flag, say so."""
     return prompt
 
 
-def review_commit(commit_message: str, files: list):
-    client = Groq(api_key=GROQ_API_KEY)
+async def review_commit(commit_message: str, files: list):
+    client = AsyncGroq(api_key=GROQ_API_KEY)
 
     included, omitted = select_files(files)
     prompt = build_prompt(commit_message, included, omitted)
 
-    completion = client.chat.completions.create(
+    completion = await client.chat.completions.create(
         model=MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},

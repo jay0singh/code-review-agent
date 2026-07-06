@@ -1,8 +1,11 @@
 import os
-import requests
+
+import httpx
 
 GITHUB_API_URL = "https://api.github.com"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+client = httpx.AsyncClient(timeout=30)
 
 
 def get_headers():
@@ -12,9 +15,9 @@ def get_headers():
     }
 
 
-def fetch_commit_diff(full_name: str, sha: str):
+async def fetch_commit_diff(full_name: str, sha: str):
     url = f"{GITHUB_API_URL}/repos/{full_name}/commits/{sha}"
-    response = requests.get(url, headers=get_headers())
+    response = await client.get(url, headers=get_headers())
     response.raise_for_status()
     data = response.json()
 
@@ -28,23 +31,19 @@ def fetch_commit_diff(full_name: str, sha: str):
     return files
 
 
-def post_commit_comment(full_name: str, sha: str, body: str):
+async def post_commit_comment(full_name: str, sha: str, body: str):
     url = f"{GITHUB_API_URL}/repos/{full_name}/commits/{sha}/comments"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(url, headers=headers, json={"body": body})
+    response = await client.post(url, headers=get_headers(), json={"body": body})
     response.raise_for_status()
     return response.json()
 
 
-def fetch_pr_diff(full_name: str, pr_number: int):
+async def fetch_pr_diff(full_name: str, pr_number: int):
     url = f"{GITHUB_API_URL}/repos/{full_name}/pulls/{pr_number}/files?per_page=100"
 
     files = []
     while url:
-        response = requests.get(url, headers=get_headers())
+        response = await client.get(url, headers=get_headers())
         response.raise_for_status()
         for file in response.json():
             files.append({
@@ -56,12 +55,8 @@ def fetch_pr_diff(full_name: str, pr_number: int):
     return files
 
 
-def post_pr_comment(full_name: str, pr_number: int, body: str):
+async def post_pr_comment(full_name: str, pr_number: int, body: str):
     url = f"{GITHUB_API_URL}/repos/{full_name}/issues/{pr_number}/comments"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(url, headers=headers, json={"body": body})
+    response = await client.post(url, headers=get_headers(), json={"body": body})
     response.raise_for_status()
     return response.json()
