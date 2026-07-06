@@ -95,6 +95,15 @@ empty or not valid JSON (e.g. GitHub ping deliveries).
 Note: `synchronize` re-reviews the full current diff each time, so a comment
 is posted on every push to the PR, not just new commits.
 
+### Diff size limit
+
+To stay within the model's context window, at most `MAX_DIFF_CHARS` characters
+of patch text (default 80000, configurable via `.env`) are sent for review.
+Files beyond the budget are omitted (largest diffs kept first-come), the model
+is told which ones, and the posted comment gets a footer noting how many files
+were actually reviewed. A single file bigger than the whole budget is truncated
+rather than skipped.
+
 ## Notes
 
 - LangGraph + human-in-the-loop review is planned for v2.
