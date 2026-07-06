@@ -2,7 +2,7 @@ import json
 import os
 
 from dotenv import load_dotenv
-from groq import AsyncGroq
+from groq import APIStatusError, AsyncGroq
 
 load_dotenv()
 
@@ -20,13 +20,13 @@ RESPONSE_FORMAT = """🤖 AI Commit Review
 💡 Suggestions:"""
 
 
-def select_files(files: list):
+def select_files(files: list, budget: int | None = None):
     """Split files into (included, omitted) so total patch size stays under
-    MAX_DIFF_CHARS. If the very first file alone exceeds the budget, its
-    patch is cut down so there is always something to review."""
+    the budget (default MAX_DIFF_CHARS). If the very first file alone exceeds
+    the budget, its patch is cut down so there is always something to review."""
     included = []
     omitted = []
-    remaining = MAX_DIFF_CHARS
+    remaining = MAX_DIFF_CHARS if budget is None else budget
 
     for file in files:
         patch = file.get("patch") or ""
@@ -78,18 +78,37 @@ Don't invent issues. If nothing to flag, say so."""
     return prompt
 
 
+async def complete_with_shrinking_diff(client, files, build_messages, **create_kwargs):
+    """Call Groq, halving the diff budget and retrying when the request is
+    too large for the account's tokens-per-minute limit (HTTP 413)."""
+    budget = MAX_DIFF_CHARS
+    attempts = 3
+    for attempt in range(attempts):
+        included, omitted = select_files(files, budget)
+        try:
+            completion = await client.chat.completions.create(
+                model=MODEL,
+                messages=build_messages(included, omitted),
+                **create_kwargs,
+            )
+            return completion, included, omitted
+        except APIStatusError as error:
+            if error.status_code != 413 or attempt == attempts - 1:
+                raise
+            budget //= 2
+
+
 async def review_commit(commit_message: str, files: list):
     client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
-    included, omitted = select_files(files)
-    prompt = build_prompt(commit_message, included, omitted)
-
-    completion = await client.chat.completions.create(
-        model=MODEL,
-        messages=[
+    def build_messages(included, omitted):
+        return [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+            {"role": "user", "content": build_prompt(commit_message, included, omitted)},
+        ]
+
+    completion, included, omitted = await complete_with_shrinking_diff(
+        client, files, build_messages
     )
 
     review = completion.choices[0].message.content
@@ -176,16 +195,14 @@ async def review_pr(title: str, files: list):
     or {"text": str} if the model output isn't valid JSON."""
     client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
-    included, omitted = select_files(files)
-    prompt = build_pr_prompt(title, included, omitted)
-
-    completion = await client.chat.completions.create(
-        model=MODEL,
-        messages=[
+    def build_messages(included, omitted):
+        return [
             {"role": "system", "content": PR_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
+            {"role": "user", "content": build_pr_prompt(title, included, omitted)},
+        ]
+
+    completion, included, omitted = await complete_with_shrinking_diff(
+        client, files, build_messages, response_format={"type": "json_object"}
     )
 
     raw = completion.choices[0].message.content

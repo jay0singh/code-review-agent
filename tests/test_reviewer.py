@@ -1,7 +1,23 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+from groq import APIStatusError
+
 import reviewer
+
+
+def too_large_error():
+    request = httpx.Request("POST", "https://api.groq.com")
+    response = httpx.Response(413, request=request)
+    return APIStatusError("request too large", response=response, body=None)
+
+
+def server_error():
+    request = httpx.Request("POST", "https://api.groq.com")
+    response = httpx.Response(500, request=request)
+    return APIStatusError("server error", response=response, body=None)
 
 
 def make_file(name, patch_size):
@@ -78,6 +94,66 @@ def test_prompt_mentions_omitted_files():
 
     assert "skipped.py" in prompt
     assert "1 file(s) were omitted" in prompt
+
+
+async def test_413_shrinks_diff_and_retries(monkeypatch):
+    monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
+    files = [make_file("a.py", 90)]
+    client = mock_groq("review text")
+    client.chat.completions.create.side_effect = [
+        too_large_error(),
+        client.chat.completions.create.return_value,
+    ]
+
+    with patch("reviewer.AsyncGroq", return_value=client):
+        review = await reviewer.review_commit("msg", files)
+
+    assert "review text" in review
+    assert client.chat.completions.create.call_count == 2
+    # retry used the halved budget: patch shrunk from 90 chars to 50
+    retry_prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "(patch truncated)" in retry_prompt
+
+
+async def test_413_gives_up_after_three_attempts(monkeypatch):
+    monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
+    client = mock_groq()
+    client.chat.completions.create.side_effect = [
+        too_large_error(), too_large_error(), too_large_error(),
+    ]
+
+    with patch("reviewer.AsyncGroq", return_value=client):
+        with pytest.raises(APIStatusError):
+            await reviewer.review_commit("msg", [make_file("a.py", 90)])
+
+    assert client.chat.completions.create.call_count == 3
+
+
+async def test_non_413_error_is_not_retried():
+    client = mock_groq()
+    client.chat.completions.create.side_effect = [server_error()]
+
+    with patch("reviewer.AsyncGroq", return_value=client):
+        with pytest.raises(APIStatusError):
+            await reviewer.review_commit("msg", [make_file("a.py", 10)])
+
+    assert client.chat.completions.create.call_count == 1
+
+
+async def test_review_pr_also_shrinks_on_413(monkeypatch):
+    monkeypatch.setattr(reviewer, "MAX_DIFF_CHARS", 100)
+    raw = json.dumps({"summary": "Fine.", "findings": []})
+    client = mock_groq(raw)
+    client.chat.completions.create.side_effect = [
+        too_large_error(),
+        client.chat.completions.create.return_value,
+    ]
+
+    with patch("reviewer.AsyncGroq", return_value=client):
+        review = await reviewer.review_pr("title", [make_file("a.py", 90)])
+
+    assert review["summary"] == "Fine."
+    assert client.chat.completions.create.call_count == 2
 
 
 async def test_review_pr_parses_structured_findings():
