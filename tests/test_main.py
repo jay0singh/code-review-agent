@@ -41,6 +41,17 @@ def test_ready_pr_is_reviewed():
     mock_post.assert_called_once_with("owner/repo", 7, "review text")
 
 
+def test_ready_for_review_action_triggers_review():
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_pr_diff", return_value=files), \
+         patch("main.review_commit", return_value="review text"), \
+         patch("main.post_pr_comment") as mock_post:
+        result = main.handle_pull_request(pr_payload(action="ready_for_review"))
+
+    assert result == {"status": "ok"}
+    mock_post.assert_called_once()
+
+
 def test_doc_only_pr_is_skipped():
     files = [{"filename": "README.md", "status": "modified", "patch": "@@"}]
     with patch("main.fetch_pr_diff", return_value=files), \

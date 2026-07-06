@@ -18,7 +18,7 @@ app = FastAPI()
 
 ZERO_SHA = "0" * 40
 SKIP_EXTENSIONS = (".md", ".yml", ".yaml", ".json", ".txt", ".text")
-PR_ACTIONS = ("opened", "synchronize", "reopened")
+PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review")
 WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
 
