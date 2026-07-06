@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import os
+from collections import OrderedDict
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
@@ -20,6 +21,24 @@ ZERO_SHA = "0" * 40
 SKIP_EXTENSIONS = (".md", ".yml", ".yaml", ".json", ".txt", ".text")
 PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review")
 WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
+
+# Dedupe store so redelivered webhooks don't post duplicate comments.
+# In-memory: resets on restart, bounded so it can't grow forever.
+MAX_SEEN_KEYS = 1000
+_seen_reviews = OrderedDict()
+
+
+def already_reviewed(key: str) -> bool:
+    if key in _seen_reviews:
+        _seen_reviews.move_to_end(key)
+        return True
+    return False
+
+
+def mark_reviewed(key: str):
+    _seen_reviews[key] = None
+    if len(_seen_reviews) > MAX_SEEN_KEYS:
+        _seen_reviews.popitem(last=False)
 
 
 def is_doc_only(filenames):
@@ -80,10 +99,16 @@ def handle_push(payload):
         if is_doc_only(added + modified):
             continue
 
+        dedupe_key = f"{repo}@{sha}"
+        if already_reviewed(dedupe_key):
+            results.append({"sha": sha, "status": "duplicate"})
+            continue
+
         try:
             files = fetch_commit_diff(repo, sha)
             review = review_commit(commit.get("message", ""), files)
             post_commit_comment(repo, sha, review)
+            mark_reviewed(dedupe_key)
             results.append({"sha": sha, "status": "ok"})
         except Exception:
             logger.exception("Failed to review commit %s", sha)
@@ -105,6 +130,11 @@ def handle_pull_request(payload):
     if pr.get("draft"):
         return {"status": "skipped", "reason": "draft pr"}
 
+    head_sha = pr.get("head", {}).get("sha")
+    dedupe_key = f"{repo}#{pr_number}@{head_sha}"
+    if already_reviewed(dedupe_key):
+        return {"status": "skipped", "reason": "duplicate delivery"}
+
     try:
         files = fetch_pr_diff(repo, pr_number)
         filenames = [f["filename"] for f in files if f.get("filename")]
@@ -114,6 +144,7 @@ def handle_pull_request(payload):
 
         review = review_commit(title, files)
         post_pr_comment(repo, pr_number, review)
+        mark_reviewed(dedupe_key)
     except Exception:
         logger.exception("Failed to review PR #%s", pr_number)
         return {"status": "failed", "pr_number": pr_number}
