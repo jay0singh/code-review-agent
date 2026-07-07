@@ -68,7 +68,9 @@ def verify_signature(body: bytes, signature: str | None):
     return hmac.compare_digest(f"sha256={expected}", signature)
 
 
-@app.get("/health")
+# Explicit HEAD: FastAPI doesn't auto-answer HEAD on GET routes, and
+# uptime monitors often probe with HEAD.
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok"}
 

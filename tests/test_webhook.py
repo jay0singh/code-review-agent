@@ -61,6 +61,12 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_health_answers_head_requests():
+    response = client.head("/health")
+
+    assert response.status_code == 200
+
+
 def test_unhandled_event_is_skipped(monkeypatch):
     monkeypatch.setattr(main, "WEBHOOK_SECRET", None)
 
