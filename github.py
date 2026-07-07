@@ -53,6 +53,13 @@ async def post_commit_comment(full_name: str, sha: str, body: str):
     return response.json()
 
 
+async def fetch_pr(full_name: str, pr_number: int):
+    url = f"{GITHUB_API_URL}/repos/{full_name}/pulls/{pr_number}"
+    response = await client.get(url, headers=get_headers())
+    response.raise_for_status()
+    return response.json()
+
+
 async def fetch_pr_diff(full_name: str, pr_number: int):
     url = f"{GITHUB_API_URL}/repos/{full_name}/pulls/{pr_number}/files?per_page=100"
 

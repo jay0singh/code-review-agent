@@ -3,11 +3,12 @@
 import pytest
 
 import main
+from dedupe import ReviewStore
 
 
 @pytest.fixture(autouse=True)
-def clear_dedupe_store():
-    main._seen_reviews.clear()
+def clear_dedupe_store(monkeypatch):
+    monkeypatch.setattr(main, "store", ReviewStore(":memory:"))
 
 
 def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
@@ -27,8 +28,9 @@ def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
     return payload
 
 
-def push_payload(sha="sha1"):
+def push_payload(sha="sha1", ref="refs/heads/feature/x"):
     return {
+        "ref": ref,
         "repository": {"full_name": "owner/repo"},
         "before": "e" * 40,
         "commits": [
@@ -303,6 +305,67 @@ async def test_opened_pr_still_uses_full_diff():
     mock_full.assert_called_once()
 
 
+def comment_payload(body="/rereview", action="created", is_pr=True):
+    issue = {"number": 7}
+    if is_pr:
+        issue["pull_request"] = {"url": "https://api.github.com/..."}
+    return {
+        "action": action,
+        "issue": issue,
+        "comment": {"body": body},
+        "repository": {"full_name": "owner/repo"},
+    }
+
+
+async def test_rereview_command_reviews_the_pr():
+    pr = {"title": "Add feature", "head": {"sha": "abc123"}}
+    with patch("main.fetch_pr", new_callable=AsyncMock, return_value=pr) as mock_pr, \
+         patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES), \
+         patch("main.review_pr", new_callable=AsyncMock, return_value=review_with_finding()), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_comment:
+        result = await main.handle_issue_comment(comment_payload())
+
+    assert result == {"status": "ok"}
+    mock_pr.assert_called_once_with("owner/repo", 7)
+    mock_comment.assert_called_once()
+
+
+async def test_rereview_bypasses_dedupe_and_quietness():
+    # already reviewed at this head AND the review is clean — a normal
+    # synchronize would be skipped twice over, but an explicit ask posts
+    main.store.mark_reviewed("owner/repo#7@abc123")
+    pr = {"title": "Add feature", "head": {"sha": "abc123"}}
+    with patch("main.fetch_pr", new_callable=AsyncMock, return_value=pr), \
+         patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES), \
+         patch("main.review_pr", new_callable=AsyncMock, return_value=SUMMARY_ONLY), \
+         patch("main.post_pr_comment", new_callable=AsyncMock) as mock_comment:
+        result = await main.handle_issue_comment(comment_payload())
+
+    assert result == {"status": "ok"}
+    body = mock_comment.call_args[0][2]
+    assert "Looks good." in body
+
+
+async def test_non_command_comment_is_ignored():
+    with patch("main.fetch_pr", new_callable=AsyncMock) as mock_pr:
+        result = await main.handle_issue_comment(comment_payload(body="nice work!"))
+
+    assert result == {"status": "skipped", "reason": "no command"}
+    mock_pr.assert_not_called()
+
+
+async def test_comment_on_plain_issue_is_ignored():
+    result = await main.handle_issue_comment(comment_payload(is_pr=False))
+
+    assert result == {"status": "skipped", "reason": "not a pr comment"}
+
+
+async def test_edited_comment_is_ignored():
+    result = await main.handle_issue_comment(comment_payload(action="edited"))
+
+    assert result == {"status": "skipped", "reason": "not a new comment"}
+
+
 async def test_duplicate_push_delivery_is_skipped():
     files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
     with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 1)) as mock_fetch, \
@@ -314,6 +377,38 @@ async def test_duplicate_push_delivery_is_skipped():
     assert first["commits"] == [{"sha": "sha1", "status": "ok"}]
     assert second["commits"] == [{"sha": "sha1", "status": "duplicate"}]
     mock_fetch.assert_called_once()
+    mock_post.assert_called_once()
+
+
+async def test_push_to_unlisted_branch_is_skipped(monkeypatch):
+    monkeypatch.setenv("REVIEW_BRANCHES", "dev,main")
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock) as mock_fetch:
+        result = await main.handle_push(push_payload(ref="refs/heads/feature/x"))
+
+    assert result == {"status": "skipped", "reason": "branch not reviewed"}
+    mock_fetch.assert_not_called()
+
+
+async def test_push_to_listed_branch_is_reviewed(monkeypatch):
+    monkeypatch.setenv("REVIEW_BRANCHES", "dev, main")
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 1)), \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_push(push_payload(ref="refs/heads/dev"))
+
+    assert result["commits"] == [{"sha": "sha1", "status": "ok"}]
+    mock_post.assert_called_once()
+
+
+async def test_no_branch_filter_reviews_all_branches():
+    files = [{"filename": "a.py", "status": "modified", "patch": "@@"}]
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock, return_value=(files, 1)), \
+         patch("main.review_commit", new_callable=AsyncMock, return_value="review"), \
+         patch("main.post_commit_comment", new_callable=AsyncMock) as mock_post:
+        result = await main.handle_push(push_payload(ref="refs/heads/anything"))
+
+    assert result["commits"] == [{"sha": "sha1", "status": "ok"}]
     mock_post.assert_called_once()
 
 
@@ -343,13 +438,3 @@ async def test_root_commit_is_skipped():
     mock_review.assert_not_called()
 
 
-def test_dedupe_store_is_bounded(monkeypatch):
-    monkeypatch.setattr(main, "MAX_SEEN_KEYS", 2)
-
-    main.mark_reviewed("k1")
-    main.mark_reviewed("k2")
-    main.mark_reviewed("k3")
-
-    assert not main.already_reviewed("k1")
-    assert main.already_reviewed("k2")
-    assert main.already_reviewed("k3")

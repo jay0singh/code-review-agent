@@ -57,7 +57,8 @@ https://abcd1234.ngrok-free.app/webhook
 3. **Content type**: `application/json`.
 4. **Secret**: paste the same value you set as `GITHUB_WEBHOOK_SECRET` in `.env`.
 5. **Which events would you like to trigger this webhook?**: select "Let me select individual events"
-   and check both **Pushes** and **Pull requests**.
+   and check **Pushes**, **Pull requests**, and **Issue comments** (the last
+   one enables the `/rereview` command).
 6. Make sure **Active** is checked, then click **Add webhook**.
 7. Push a commit to the repo and check the **Recent Deliveries** tab on the
    webhook settings page to confirm it was received successfully.
@@ -110,6 +111,13 @@ fetches the compare diff between the previous and new head
 review is skipped entirely. If the compare fails (e.g. after a force-push
 whose old head is gone), the full PR diff is reviewed instead.
 
+### /rereview command
+
+Comment `/rereview` on any pull request to force a fresh review of the full
+current diff. It bypasses both duplicate-delivery detection and severity
+quietness — an explicit request always gets a posted answer, even if the
+verdict is "nothing to flag".
+
 ### Diff size limit
 
 To stay within the model's context window, at most `MAX_DIFF_CHARS` characters
@@ -117,11 +125,32 @@ of patch text (default 80000, configurable via `.env`) are sent for review.
 On Groq's free tier the real constraint is the 12,000 tokens-per-minute limit,
 so a value around 30000 is recommended there. If Groq still rejects a request
 as too large (HTTP 413), the agent automatically halves the diff budget and
-retries, up to two times, before giving up.
+retries, up to two times, before giving up. If the per-minute token budget is
+exhausted instead (HTTP 429, e.g. by a multi-commit push), the agent waits —
+honoring Groq's `retry-after` header when present — and retries up to three
+times while the window refills.
 Files beyond the budget are omitted (largest diffs kept first-come), the model
 is told which ones, and the posted comment gets a footer noting how many files
 were actually reviewed. A single file bigger than the whole budget is truncated
 rather than skipped.
+
+## Running with Docker
+
+Build and run with compose (reads keys from `.env`):
+
+```
+docker compose up --build -d
+docker compose logs -f agent
+```
+
+The container listens on port 8001, same as the local setup, so the ngrok
+tunnel command doesn't change. The dedupe database lives on a named volume
+(`commit_review_dedupe`), so already-reviewed commits stay remembered across
+rebuilds and restarts.
+
+To deploy on a host with a public URL (Fly.io, Railway, Render, a VPS), build
+from the same Dockerfile, supply the `.env` values as secrets, and point the
+GitHub webhook at `https://<your-host>/webhook` — no ngrok needed.
 
 ## Notes
 

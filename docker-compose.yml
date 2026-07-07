@@ -1,0 +1,17 @@
+services:
+  agent:
+    build: .
+    container_name: commit-review-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Keep the dedupe db on the named volume so it survives rebuilds.
+      DEDUPE_DB: /data/reviewed.db
+    ports:
+      - "8001:8001"
+    volumes:
+      - dedupe_data:/data
+
+volumes:
+  dedupe_data:
+    name: commit_review_dedupe

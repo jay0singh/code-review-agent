@@ -2,14 +2,15 @@ import hashlib
 import hmac
 import json
 import os
-from collections import OrderedDict
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
+from dedupe import ReviewStore
 from github import (
     fetch_commit_diff,
     fetch_compare_diff,
+    fetch_pr,
     fetch_pr_diff,
     post_commit_comment,
     post_pr_comment,
@@ -36,22 +37,22 @@ PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review")
 WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 
 # Dedupe store so redelivered webhooks don't post duplicate comments.
-# In-memory: resets on restart, bounded so it can't grow forever.
-MAX_SEEN_KEYS = 1000
-_seen_reviews = OrderedDict()
+# SQLite-backed (DEDUPE_DB, default reviewed.db) so it survives restarts.
+store = ReviewStore()
 
 
-def already_reviewed(key: str) -> bool:
-    if key in _seen_reviews:
-        _seen_reviews.move_to_end(key)
+def branch_allowed(ref):
+    """REVIEW_BRANCHES (comma-separated, e.g. "dev,main") limits which
+    branches get push reviews; unset means all branches. Read at call time."""
+    allowed = [
+        b.strip()
+        for b in os.getenv("REVIEW_BRANCHES", "").split(",")
+        if b.strip()
+    ]
+    if not allowed:
         return True
-    return False
-
-
-def mark_reviewed(key: str):
-    _seen_reviews[key] = None
-    if len(_seen_reviews) > MAX_SEEN_KEYS:
-        _seen_reviews.popitem(last=False)
+    branch = (ref or "").removeprefix("refs/heads/")
+    return branch in allowed
 
 
 def is_doc_only(filenames):
@@ -97,14 +98,21 @@ async def webhook(
 
     if x_github_event == "pull_request":
         return await handle_pull_request(payload)
+    if x_github_event == "issue_comment":
+        return await handle_issue_comment(payload)
+    if x_github_event == "push":
+        return await handle_push(payload)
 
-    return await handle_push(payload)
+    return {"status": "skipped", "reason": f"event '{x_github_event}' not handled"}
 
 
 async def handle_push(payload):
     repo = payload.get("repository", {}).get("full_name")
     commits = payload.get("commits", [])
     before = payload.get("before")
+
+    if not branch_allowed(payload.get("ref")):
+        return {"status": "skipped", "reason": "branch not reviewed"}
 
     if before == ZERO_SHA:
         return {"status": "skipped", "reason": "initial push"}
@@ -119,7 +127,7 @@ async def handle_push(payload):
             continue
 
         dedupe_key = f"{repo}@{sha}"
-        if already_reviewed(dedupe_key):
+        if store.already_reviewed(dedupe_key):
             results.append({"sha": sha, "status": "duplicate"})
             continue
 
@@ -135,7 +143,7 @@ async def handle_push(payload):
 
             review = await review_commit(commit.get("message", ""), files)
             await post_commit_comment(repo, sha, review)
-            mark_reviewed(dedupe_key)
+            store.mark_reviewed(dedupe_key)
             logger.info("commit review posted", extra={"repo": repo, "sha": sha})
             results.append({"sha": sha, "status": "ok"})
         except Exception:
@@ -162,7 +170,7 @@ async def handle_pull_request(payload):
 
     head_sha = pr.get("head", {}).get("sha")
     dedupe_key = f"{repo}#{pr_number}@{head_sha}"
-    if already_reviewed(dedupe_key):
+    if store.already_reviewed(dedupe_key):
         return {"status": "skipped", "reason": "duplicate delivery"}
 
     before = payload.get("before")
@@ -193,55 +201,7 @@ async def handle_pull_request(payload):
         if is_doc_only(filenames):
             return {"status": "skipped", "reason": "doc only"}
 
-        review = await review_pr(title, files)
-
-        if "findings" in review:
-            if not worth_posting(review["findings"]):
-                mark_reviewed(dedupe_key)
-                logger.info(
-                    "review suppressed, nothing above min severity",
-                    extra={
-                        "repo": repo,
-                        "pr_number": pr_number,
-                        "findings": len(review["findings"]),
-                    },
-                )
-                return {"status": "ok", "review": "suppressed"}
-
-            anchored, unanchored = partition_findings(review["findings"], files)
-            comments = [
-                {
-                    "path": finding["file"],
-                    "line": finding["line"],
-                    "side": "RIGHT",
-                    "body": format_inline_comment(finding),
-                }
-                for finding in anchored
-            ]
-            body = format_body(review["summary"], unanchored, scope)
-
-            if comments:
-                try:
-                    await post_pr_review(repo, pr_number, head_sha, body, comments)
-                except Exception:
-                    logger.exception(
-                        "inline review failed, falling back to comment",
-                        extra={"repo": repo, "pr_number": pr_number},
-                    )
-                    await post_pr_comment(
-                        repo, pr_number,
-                        format_body(review["summary"], review["findings"], scope),
-                    )
-            else:
-                await post_pr_comment(repo, pr_number, body)
-        else:
-            await post_pr_comment(repo, pr_number, review["text"])
-
-        mark_reviewed(dedupe_key)
-        logger.info(
-            "pr review posted",
-            extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
-        )
+        return await run_pr_review(repo, pr_number, title, head_sha, files, scope)
     except Exception:
         logger.exception(
             "pr review failed",
@@ -249,6 +209,93 @@ async def handle_pull_request(payload):
         )
         return {"status": "failed", "pr_number": pr_number}
 
+
+async def run_pr_review(repo, pr_number, title, head_sha, files,
+                        scope=None, force_post=False):
+    """Review the given files and post the outcome to the PR. force_post
+    bypasses severity quietness — used when a human explicitly asked."""
+    dedupe_key = f"{repo}#{pr_number}@{head_sha}"
+    review = await review_pr(title, files)
+
+    if "findings" in review:
+        if not force_post and not worth_posting(review["findings"]):
+            store.mark_reviewed(dedupe_key)
+            logger.info(
+                "review suppressed, nothing above min severity",
+                extra={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "findings": len(review["findings"]),
+                },
+            )
+            return {"status": "ok", "review": "suppressed"}
+
+        anchored, unanchored = partition_findings(review["findings"], files)
+        comments = [
+            {
+                "path": finding["file"],
+                "line": finding["line"],
+                "side": "RIGHT",
+                "body": format_inline_comment(finding),
+            }
+            for finding in anchored
+        ]
+        body = format_body(review["summary"], unanchored, scope)
+
+        if comments:
+            try:
+                await post_pr_review(repo, pr_number, head_sha, body, comments)
+            except Exception:
+                logger.exception(
+                    "inline review failed, falling back to comment",
+                    extra={"repo": repo, "pr_number": pr_number},
+                )
+                await post_pr_comment(
+                    repo, pr_number,
+                    format_body(review["summary"], review["findings"], scope),
+                )
+        else:
+            await post_pr_comment(repo, pr_number, body)
+    else:
+        await post_pr_comment(repo, pr_number, review["text"])
+
+    store.mark_reviewed(dedupe_key)
+    logger.info(
+        "pr review posted",
+        extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
+    )
     return {"status": "ok"}
+
+
+async def handle_issue_comment(payload):
+    if payload.get("action") != "created":
+        return {"status": "skipped", "reason": "not a new comment"}
+
+    issue = payload.get("issue") or {}
+    if "pull_request" not in issue:
+        return {"status": "skipped", "reason": "not a pr comment"}
+
+    body = ((payload.get("comment") or {}).get("body") or "").strip()
+    if not body.startswith("/rereview"):
+        return {"status": "skipped", "reason": "no command"}
+
+    repo = payload.get("repository", {}).get("full_name")
+    pr_number = issue.get("number")
+
+    try:
+        pr = await fetch_pr(repo, pr_number)
+        head_sha = pr.get("head", {}).get("sha")
+        files = await fetch_pr_diff(repo, pr_number)
+        logger.info(
+            "rereview requested", extra={"repo": repo, "pr_number": pr_number}
+        )
+        return await run_pr_review(
+            repo, pr_number, pr.get("title", ""), head_sha, files, force_post=True
+        )
+    except Exception:
+        logger.exception(
+            "rereview failed", extra={"repo": repo, "pr_number": pr_number}
+        )
+        return {"status": "failed", "pr_number": pr_number}
 
 
