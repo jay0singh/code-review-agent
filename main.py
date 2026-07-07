@@ -68,6 +68,11 @@ def verify_signature(body: bytes, signature: str | None):
     return hmac.compare_digest(f"sha256={expected}", signature)
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/webhook")
 async def webhook(
     request: Request,

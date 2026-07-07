@@ -54,6 +54,13 @@ def test_push_with_no_commits_returns_ok(monkeypatch):
     assert response.json() == {"status": "ok", "commits": []}
 
 
+def test_health_endpoint():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_unhandled_event_is_skipped(monkeypatch):
     monkeypatch.setattr(main, "WEBHOOK_SECRET", None)
 

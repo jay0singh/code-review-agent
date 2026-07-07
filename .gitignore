@@ -9,3 +9,4 @@ ngrok
 .DS_Store
 .pytest_cache/
 reviewed.db
+*.pem

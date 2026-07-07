@@ -3,5 +3,6 @@ uvicorn
 groq
 python-dotenv
 httpx
+pyjwt[crypto]
 pytest
 pytest-asyncio
