@@ -134,6 +134,38 @@ is told which ones, and the posted comment gets a footer noting how many files
 were actually reviewed. A single file bigger than the whole budget is truncated
 rather than skipped.
 
+## GitHub App setup (optional, recommended)
+
+By default the agent authenticates with your personal access token, which
+expires and posts comments under your own account. Registering a GitHub App
+instead gives the agent a bot identity and self-rotating tokens:
+
+1. GitHub → **Settings** → **Developer settings** → **GitHub Apps** →
+   **New GitHub App**.
+2. **App name**: e.g. `commit-review-agent`. **Homepage URL**: the repo URL.
+3. **Webhook**: check Active, set the URL to your `/webhook` endpoint and the
+   secret to the same value as `GITHUB_WEBHOOK_SECRET`.
+4. **Repository permissions**: Contents **Read and write**, Pull requests
+   **Read and write**, Issues **Read and write**.
+5. **Subscribe to events**: Push, Pull request, Issue comment.
+6. Create the app, then on its settings page: note the **App ID**, and under
+   Private keys click **Generate a private key** — a `.pem` file downloads.
+7. **Install App** (left sidebar) → install it on your repository. The number
+   at the end of the resulting URL (`.../installations/<number>`) is the
+   installation ID.
+8. Fill in `.env` (the PAT is then no longer used):
+
+   ```
+   GITHUB_APP_ID=123456
+   GITHUB_APP_PRIVATE_KEY_PATH=path/to/your-app.private-key.pem
+   GITHUB_APP_INSTALLATION_ID=78901234
+   ```
+
+The agent signs a short-lived JWT with the private key, exchanges it for an
+installation token (cached, auto-refreshed before expiry), and uses that for
+all API calls. Since the app delivers its own webhooks, you can delete the
+old repository webhook to avoid duplicate deliveries.
+
 ## Running with Docker
 
 Build and run with compose (reads keys from `.env`):
