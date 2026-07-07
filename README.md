@@ -1,7 +1,15 @@
 # Commit Review Agent
 
-Receives GitHub push and pull request webhooks, fetches the diff, sends it
-to Groq for an AI code review, and posts the review back as a comment.
+Receives GitHub push, pull request, and comment webhooks, fetches the diff,
+sends it to Groq for an AI code review, and posts the review back — as
+line-anchored comments on PRs (severity-tagged 🔴/🟡/🔵) and as comments on
+pushed commits. Runs as a GitHub App, so reviews post under a bot identity
+(`jay-code-review-agent[bot]`).
+
+**Live deployment:** hosted on Render's free tier at
+`https://code-review-agent-qgx1.onrender.com`, kept awake by an UptimeRobot
+probe of `/health` every 5 minutes. Merges to `dev` auto-deploy. See
+[Production deployment](#production-deployment-render) below.
 
 ## Setup
 
@@ -34,10 +42,11 @@ Start the server on port 8001:
 uvicorn main:app --reload --port 8001
 ```
 
-## Exposing it with ngrok
+## Exposing it with ngrok (local development only)
 
-GitHub needs a public URL to send webhooks to. Use ngrok to tunnel your
-local server:
+In production the agent has a real public URL on Render, so ngrok is only
+needed when developing locally. GitHub needs a public URL to send webhooks
+to; use ngrok to tunnel your local server:
 
 ```
 ngrok http 8001
@@ -50,7 +59,11 @@ Your webhook endpoint will be:
 https://abcd1234.ngrok-free.app/webhook
 ```
 
-## GitHub webhook setup
+## GitHub webhook setup (PAT mode only)
+
+Skip this section when using the GitHub App — the app delivers its own
+webhooks, and a repository webhook alongside it would double every event.
+This is only for running with a plain `GITHUB_TOKEN`:
 
 1. Go to your repository on GitHub → **Settings** → **Webhooks** → **Add webhook**.
 2. **Payload URL**: paste the ngrok URL from above (e.g. `https://abcd1234.ngrok-free.app/webhook`).
@@ -192,6 +205,35 @@ safe to share.
 To deploy on a host with a public URL (Fly.io, Railway, Render, a VPS), build
 from the same Dockerfile, supply the `.env` values as secrets, and point the
 GitHub webhook at `https://<your-host>/webhook` — no ngrok needed.
+
+## Production deployment (Render)
+
+The live instance is a Render **free-tier web service** (no card required)
+built from the Dockerfile, watching the `dev` branch — every merge
+auto-deploys. (Render occasionally misses a push event; if a merge doesn't
+deploy, use **Manual Deploy → Deploy latest commit**.)
+
+Configuration on Render:
+
+- **Environment variables**: `GROQ_API_KEY`, `GITHUB_WEBHOOK_SECRET`,
+  `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `MAX_DIFF_CHARS`, and
+  `GITHUB_APP_PRIVATE_KEY_PATH=/etc/secrets/github-app.pem`.
+- **Secret file** named `github-app.pem` containing the GitHub App's private
+  key — Render mounts secret files under `/etc/secrets/`. The key is never
+  baked into the image.
+- Render injects `PORT` and the container binds to it automatically.
+- The GitHub App's webhook URL points at
+  `https://code-review-agent-qgx1.onrender.com/webhook`.
+
+Free-tier services sleep after 15 idle minutes and wake too slowly for
+GitHub's 10-second webhook timeout, so an **UptimeRobot** monitor probes
+`GET/HEAD /health` every 5 minutes to keep the service permanently warm.
+This also provides free downtime alerts. One always-on service fits within
+Render's 750 free instance-hours per month.
+
+Known trade-off: the dedupe database lives on the container's ephemeral
+disk, so it resets on each deploy — worst case is a single duplicate
+comment after a deploy.
 
 ## Notes
 
