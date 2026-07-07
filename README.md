@@ -180,6 +180,15 @@ tunnel command doesn't change. The dedupe database lives on a named volume
 (`commit_review_dedupe`), so already-reviewed commits stay remembered across
 rebuilds and restarts.
 
+Remember `--build`: plain `docker compose up` reuses the previously built
+image, so code changes (and newly added features) won't be in the container
+until you rebuild.
+
+If GitHub App auth is configured, the private key is **mounted read-only**
+into the container from the path in `GITHUB_APP_PRIVATE_KEY_PATH` — it is
+never copied into the image (`*.pem` is in `.dockerignore`), so images stay
+safe to share.
+
 To deploy on a host with a public URL (Fly.io, Railway, Render, a VPS), build
 from the same Dockerfile, supply the `.env` values as secrets, and point the
 GitHub webhook at `https://<your-host>/webhook` — no ngrok needed.

@@ -12,4 +12,5 @@ ngrok.exe
 ngrok
 reviewed.db
 *.log
+*.pem
 README.md

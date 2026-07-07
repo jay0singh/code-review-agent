@@ -7,10 +7,14 @@ services:
     environment:
       # Keep the dedupe db on the named volume so it survives rebuilds.
       DEDUPE_DB: /data/reviewed.db
+      # The key is mounted below, never copied into the image.
+      GITHUB_APP_PRIVATE_KEY_PATH: /app/github-app.pem
     ports:
       - "8001:8001"
     volumes:
       - dedupe_data:/data
+      # Host path comes from .env; harmless placeholder if app auth is unused.
+      - ${GITHUB_APP_PRIVATE_KEY_PATH:-./github-app.pem}:/app/github-app.pem:ro
 
 volumes:
   dedupe_data:
