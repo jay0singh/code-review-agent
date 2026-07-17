@@ -8,7 +8,7 @@ pushed commits. Runs as a GitHub App, so reviews post under a bot identity
 
 **Live deployment:** hosted on Render's free tier at
 `https://code-review-agent-qgx1.onrender.com`, kept awake by an UptimeRobot
-probe of `/health` every 5 minutes. Merges to `dev` auto-deploy. See
+probe of `/health` every 5 minutes. Merges to `main` auto-deploy. See
 [Production deployment](#production-deployment-render) below.
 
 ## Setup
@@ -209,9 +209,11 @@ GitHub webhook at `https://<your-host>/webhook` — no ngrok needed.
 ## Production deployment (Render)
 
 The live instance is a Render **free-tier web service** (no card required)
-built from the Dockerfile, watching the `dev` branch — every merge
-auto-deploys. (Render occasionally misses a push event; if a merge doesn't
-deploy, use **Manual Deploy → Deploy latest commit**.)
+built from the Dockerfile, watching the `main` branch — every merge
+auto-deploys. Day-to-day work lands on `dev` (the integration branch);
+merging `dev` → `main` cuts a release. (Render occasionally misses a push
+event; if a merge doesn't deploy, use **Manual Deploy → Deploy latest
+commit**.)
 
 Configuration on Render:
 
