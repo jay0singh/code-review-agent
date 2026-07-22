@@ -428,3 +428,103 @@ async def test_force_post_still_gates_when_telegram_configured(monkeypatch):
     assert result == {"status": "ok", "review": "pending_approval"}
     mock_comment.assert_not_called()
     mock_send.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Failure notifications (notify_failure / ops alerts)
+# ---------------------------------------------------------------------------
+
+def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
+    payload = {
+        "action": action,
+        "number": 7,
+        "repository": {"full_name": "owner/repo"},
+        "pull_request": {
+            "title": "Add feature",
+            "draft": draft,
+            "head": {"sha": head_sha},
+        },
+    }
+    if before:
+        payload["before"] = before
+        payload["after"] = head_sha
+    return payload
+
+
+async def test_pr_review_failure_notifies_when_configured(monkeypatch):
+    configure_telegram(monkeypatch)
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES), \
+         patch("main.review_pr", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+         patch("telegram.send_notification", new_callable=AsyncMock) as mock_notify:
+        result = await main.handle_pull_request(pr_payload())
+
+    assert result == {"status": "failed", "pr_number": 7}
+    mock_notify.assert_called_once()
+    chat_id, text = mock_notify.call_args[0]
+    assert chat_id == "999"
+    assert "PR review failed" in text
+
+
+async def test_push_commit_failure_notifies_when_configured(monkeypatch):
+    configure_telegram(monkeypatch)
+    with patch("main.fetch_commit_diff", new_callable=AsyncMock,
+               side_effect=RuntimeError("boom")), \
+         patch("telegram.send_notification", new_callable=AsyncMock) as mock_notify:
+        result = await main.handle_push(push_payload())
+
+    assert result["commits"] == [{"sha": "sha1", "status": "failed"}]
+    mock_notify.assert_called_once()
+    chat_id, text = mock_notify.call_args[0]
+    assert chat_id == "999"
+    assert "Commit review failed" in text
+
+
+def comment_payload(body="/rereview", action="created", is_pr=True):
+    issue = {"number": 7}
+    if is_pr:
+        issue["pull_request"] = {"url": "https://api.github.com/..."}
+    return {
+        "action": action,
+        "issue": issue,
+        "comment": {"body": body},
+        "repository": {"full_name": "owner/repo"},
+    }
+
+
+async def test_rereview_failure_notifies_when_configured(monkeypatch):
+    configure_telegram(monkeypatch)
+    with patch("main.fetch_pr", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+         patch("telegram.send_notification", new_callable=AsyncMock) as mock_notify:
+        result = await main.handle_issue_comment(comment_payload())
+
+    assert result == {"status": "failed", "pr_number": 7}
+    mock_notify.assert_called_once()
+    chat_id, text = mock_notify.call_args[0]
+    assert chat_id == "999"
+    assert "Re-review failed" in text
+
+
+async def test_pr_review_failure_unconfigured_does_not_notify(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES), \
+         patch("main.review_pr", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+         patch("telegram.send_notification", new_callable=AsyncMock) as mock_notify:
+        result = await main.handle_pull_request(pr_payload())
+
+    assert result == {"status": "failed", "pr_number": 7}
+    mock_notify.assert_not_called()
+
+
+async def test_notify_failure_swallows_telegram_errors(monkeypatch):
+    # A broken notification must never surface — the handler's own "failed"
+    # result must still be returned.
+    configure_telegram(monkeypatch)
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES), \
+         patch("main.review_pr", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+         patch("telegram.send_notification", new_callable=AsyncMock,
+               side_effect=RuntimeError("telegram down")) as mock_notify:
+        result = await main.handle_pull_request(pr_payload())
+
+    assert result == {"status": "failed", "pr_number": 7}
+    mock_notify.assert_called_once()

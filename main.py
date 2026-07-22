@@ -139,6 +139,18 @@ def _esc(text: str) -> str:
     return html.escape(text or "", quote=False)
 
 
+async def notify_failure(text: str):
+    """Best-effort ops alert to Telegram when a review fails. No-op unless
+    Telegram is configured; never raises (a notification problem must not
+    mask the original failure)."""
+    if not gating_active():
+        return
+    try:
+        await telegram.send_notification(os.getenv("TELEGRAM_CHAT_ID"), text)
+    except Exception:
+        logger.exception("failed to send telegram failure notification")
+
+
 def render_pr_approval_text(repo, pr_number, title, review) -> str:
     """Concise HTML summary of a pending PR review, for the Telegram
     approval prompt. Kept well under Telegram's 4096-char message limit."""
@@ -279,6 +291,9 @@ async def handle_push(payload):
             logger.exception(
                 "commit review failed", extra={"repo": repo, "sha": sha}
             )
+            await notify_failure(
+                f"⚠️ <b>Commit review failed</b>\n{_esc(repo)}@{sha[:7]}"
+            )
             results.append({"sha": sha, "status": "failed"})
 
     return {"status": "ok", "commits": results}
@@ -335,6 +350,9 @@ async def handle_pull_request(payload):
         logger.exception(
             "pr review failed",
             extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
+        )
+        await notify_failure(
+            f"⚠️ <b>PR review failed</b>\n{_esc(repo)} #{pr_number}"
         )
         return {"status": "failed", "pr_number": pr_number}
 
@@ -444,6 +462,9 @@ async def handle_issue_comment(payload):
     except Exception:
         logger.exception(
             "rereview failed", extra={"repo": repo, "pr_number": pr_number}
+        )
+        await notify_failure(
+            f"⚠️ <b>Re-review failed</b>\n{_esc(repo)} #{pr_number}"
         )
         return {"status": "failed", "pr_number": pr_number}
 
