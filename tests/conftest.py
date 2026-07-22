@@ -1,5 +1,7 @@
 import pytest
 
+import reviewer
+
 
 @pytest.fixture(autouse=True)
 def isolate_review_env(monkeypatch):
@@ -14,3 +16,4 @@ def isolate_review_env(monkeypatch):
         "GITHUB_APP_INSTALLATION_ID",
     ):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(reviewer, "_client", None, raising=False)

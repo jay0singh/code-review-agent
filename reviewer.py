@@ -20,6 +20,17 @@ RESPONSE_FORMAT = """🤖 AI Commit Review
 
 💡 Suggestions:"""
 
+_client = None
+
+
+def _get_client():
+    """Reuse a single AsyncGroq client. Lazy so GROQ_API_KEY is read on
+    first use (after .env is loaded), not at import."""
+    global _client
+    if _client is None:
+        _client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+    return _client
+
 
 def select_files(files: list, budget: int | None = None):
     """Split files into (included, omitted) so total patch size stays under
@@ -138,7 +149,7 @@ def lint_commit_message(message: str):
 
 
 async def review_commit(commit_message: str, files: list):
-    client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+    client = _get_client()
 
     def build_messages(included, omitted):
         return [
@@ -235,7 +246,7 @@ def parse_findings(raw_findings):
 async def review_pr(title: str, files: list):
     """Structured PR review. Returns {"summary": str, "findings": [...]},
     or {"text": str} if the model output isn't valid JSON."""
-    client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+    client = _get_client()
 
     def build_messages(included, omitted):
         return [
