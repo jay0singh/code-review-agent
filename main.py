@@ -35,6 +35,8 @@ logger = setup_logging()
 
 app = FastAPI()
 
+__version__ = "0.1.0"
+
 ZERO_SHA = "0" * 40
 SKIP_EXTENSIONS = (".md", ".yml", ".yaml", ".json", ".txt", ".text")
 PR_ACTIONS = ("opened", "synchronize", "reopened", "ready_for_review")
