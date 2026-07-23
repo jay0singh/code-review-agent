@@ -179,6 +179,67 @@ installation token (cached, auto-refreshed before expiry), and uses that for
 all API calls. Since the app delivers its own webhooks, you can delete the
 old repository webhook to avoid duplicate deliveries.
 
+## Telegram approval bot (optional)
+
+By default the agent posts reviews to GitHub automatically. Configure a Telegram
+bot and it instead **holds each review for your approval** — it sends the review
+to a Telegram chat with **Approve / Reject** buttons and posts to GitHub only
+when you tap Approve. This is the human-in-the-loop review flow.
+
+Leave `TELEGRAM_BOT_TOKEN` unset to disable the feature entirely; the agent then
+behaves exactly as it does without it.
+
+**What you get**
+
+- **Approval gate** — PR and commit reviews are held; Approve posts them, Reject
+  discards them. Approval buttons are single-use.
+- **Failure alerts** — if a review fails (Groq error, GitHub rejection, …) you
+  get a plain notification (no buttons).
+- **Gate modes** via `TELEGRAM_GATE_MODE`:
+  - `all` (default) — every PR and commit review is held for approval.
+  - `blockers` — only PR reviews containing a 🔴 blocker are held; non-blocker
+    PR reviews and all commit reviews post directly. An unrecognized value fails
+    closed (treated as `all`).
+
+**Setup**
+
+1. Create a bot: message **@BotFather** → `/newbot` → note the **bot token**.
+2. Get your **chat id**: open your new bot and press **Start**, then check
+   **@userinfobot**, or open `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   and read `chat.id` (group ids are negative — to approve from a group, add the
+   bot to it and use the group's id).
+3. Fill in `.env` (documented in `.env.example`):
+
+   ```
+   TELEGRAM_BOT_TOKEN=123456789:AA...
+   TELEGRAM_CHAT_ID=123456789
+   TELEGRAM_WEBHOOK_SECRET=some_random_string   # e.g. openssl rand -hex 32
+   TELEGRAM_GATE_MODE=all
+   ```
+
+4. Register the Telegram webhook so button presses reach the agent's `/telegram`
+   endpoint (substitute your token, secret, and host):
+
+   ```
+   curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+     -d "url=https://code-review-agent-qgx1.onrender.com/telegram" \
+     -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+   ```
+
+   Telegram echoes `secret_token` back in the `X-Telegram-Bot-Api-Secret-Token`
+   header on every callback, which the agent verifies. Confirm registration with
+   `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"`. When developing
+   locally, expose the app with ngrok and use the ngrok URL + `/telegram`.
+
+**Security**
+
+- Set `TELEGRAM_WEBHOOK_SECRET`. Without it, `/telegram` is unauthenticated (the
+  agent logs a warning). Only callbacks from `TELEGRAM_CHAT_ID` are honored, and
+  approval tokens are single-use and unguessable.
+- Pending approvals live in the same SQLite db as the dedupe store (`DEDUPE_DB`).
+  On Render's ephemeral disk that resets on deploy, so a review left *pending*
+  across a redeploy is dropped — re-trigger it on a PR with `/rereview`.
+
 ## Running with Docker
 
 Build and run with compose (reads keys from `.env`):
@@ -220,6 +281,10 @@ Configuration on Render:
 - **Environment variables**: `GROQ_API_KEY`, `GITHUB_WEBHOOK_SECRET`,
   `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `MAX_DIFF_CHARS`, and
   `GITHUB_APP_PRIVATE_KEY_PATH=/etc/secrets/github-app.pem`.
+- **Telegram approval bot** (optional): also set `TELEGRAM_BOT_TOKEN`,
+  `TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET`, and optionally
+  `TELEGRAM_GATE_MODE`, then register the webhook — see
+  [Telegram approval bot](#telegram-approval-bot-optional).
 - **Secret file** named `github-app.pem` containing the GitHub App's private
   key — Render mounts secret files under `/etc/secrets/`. The key is never
   baked into the image.
@@ -239,4 +304,6 @@ comment after a deploy.
 
 ## Notes
 
-- LangGraph + human-in-the-loop review is planned for v2.
+- Human-in-the-loop review is available via the
+  [Telegram approval bot](#telegram-approval-bot-optional). LangGraph-based
+  orchestration is still planned for v2.

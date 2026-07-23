@@ -1,11 +1,14 @@
 import hashlib
 import hmac
+import html
 import json
 import os
+from collections import Counter
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
+import telegram
 from dedupe import ReviewStore
 from github import (
     fetch_commit_diff,
@@ -23,6 +26,7 @@ from inline_review import (
     worth_posting,
 )
 from log_config import setup_logging
+from pending import PendingReviewStore, new_token
 from reviewer import review_commit, review_pr
 
 load_dotenv()
@@ -39,6 +43,44 @@ WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 # Dedupe store so redelivered webhooks don't post duplicate comments.
 # SQLite-backed (DEDUPE_DB, default reviewed.db) so it survives restarts.
 store = ReviewStore()
+
+# Reviews awaiting a human's approve/reject decision via Telegram, when
+# gating is active. Same SQLite file as `store` by default.
+pending = PendingReviewStore()
+
+
+def gating_active() -> bool:
+    """Telegram approval gate is active only when the bot is configured AND
+    a chat id is set to receive/authorize approvals. Read at call time, like
+    branch_allowed, so env changes after import still take effect."""
+    return telegram.telegram_enabled() and bool(os.getenv("TELEGRAM_CHAT_ID"))
+
+
+def gate_mode() -> str:
+    """TELEGRAM_GATE_MODE, defaulting to "all". Fails CLOSED: an unrecognized
+    value gates everything rather than silently posting unapproved reviews."""
+    mode = os.getenv("TELEGRAM_GATE_MODE", "all")
+    if mode not in ("all", "blockers"):
+        logger.warning(
+            "unknown TELEGRAM_GATE_MODE, defaulting to 'all'", extra={"value": mode}
+        )
+        return "all"
+    return mode
+
+
+_warned_no_secret = False
+
+
+def _warn_if_no_secret():
+    """Log once (not per-review) when gating is active but /telegram has no
+    shared secret configured, so an operator notices the exposure."""
+    global _warned_no_secret
+    if not _warned_no_secret and not os.getenv("TELEGRAM_WEBHOOK_SECRET"):
+        logger.warning(
+            "TELEGRAM_WEBHOOK_SECRET is unset — /telegram is unauthenticated; "
+            "setting it is strongly recommended."
+        )
+        _warned_no_secret = True
 
 
 def branch_allowed(ref):
@@ -66,6 +108,79 @@ def verify_signature(body: bytes, signature: str | None):
         return False
     expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(f"sha256={expected}", signature)
+
+
+async def execute_plan(plan):
+    """Perform the GitHub post(s) a review plan describes. Both the direct
+    path and the Telegram-approved path funnel through here so the actual
+    posting behavior (including the inline->comment fallback) is identical
+    either way."""
+    kind = plan["kind"]
+    if kind == "pr_review_inline":
+        try:
+            await post_pr_review(
+                plan["repo"], plan["pr_number"], plan["head_sha"],
+                plan["body"], plan["comments"],
+            )
+        except Exception:
+            logger.exception(
+                "inline review failed, falling back to comment",
+                extra={"repo": plan["repo"], "pr_number": plan["pr_number"]},
+            )
+            await post_pr_comment(plan["repo"], plan["pr_number"], plan["fallback_body"])
+    elif kind == "pr_comment":
+        await post_pr_comment(plan["repo"], plan["pr_number"], plan["body"])
+    elif kind == "commit_comment":
+        await post_commit_comment(plan["repo"], plan["sha"], plan["body"])
+
+
+def _esc(text: str) -> str:
+    """HTML-escape for Telegram parse_mode=HTML."""
+    return html.escape(text or "", quote=False)
+
+
+async def notify_failure(text: str):
+    """Best-effort ops alert to Telegram when a review fails. No-op unless
+    Telegram is configured; never raises (a notification problem must not
+    mask the original failure)."""
+    if not gating_active():
+        return
+    try:
+        await telegram.send_notification(os.getenv("TELEGRAM_CHAT_ID"), text)
+    except Exception:
+        logger.exception("failed to send telegram failure notification")
+
+
+def render_pr_approval_text(repo, pr_number, title, review) -> str:
+    """Concise HTML summary of a pending PR review, for the Telegram
+    approval prompt. Kept well under Telegram's 4096-char message limit."""
+    lines = [
+        "🔎 <b>PR review awaiting approval</b>",
+        f"{_esc(repo)} #{pr_number}: {_esc(title)}",
+        "",
+    ]
+    if "findings" in review:
+        lines.append(_esc(review["summary"]))
+        counts = Counter(finding.get("severity") for finding in review["findings"])
+        lines.append("")
+        lines.append(
+            f"{counts.get('blocker', 0)} blocker / "
+            f"{counts.get('warning', 0)} warning / "
+            f"{counts.get('nit', 0)} nit"
+        )
+    else:
+        lines.append(_esc(review.get("text", "")))
+    return "\n".join(lines)[:3800]
+
+
+def render_commit_approval_text(repo, sha, body) -> str:
+    """Concise HTML summary of a pending commit review, for the Telegram
+    approval prompt."""
+    preview = "\n".join(_esc(body).splitlines()[:10])
+    return (
+        "🔎 <b>Commit review awaiting approval</b>\n"
+        f"{_esc(repo)}@{sha[:7]}\n\n{preview}"
+    )[:3800]
 
 
 # Explicit HEAD: FastAPI doesn't auto-answer HEAD on GET routes, and
@@ -149,13 +264,35 @@ async def handle_push(payload):
                 continue
 
             review = await review_commit(commit.get("message", ""), files)
-            await post_commit_comment(repo, sha, review)
-            store.mark_reviewed(dedupe_key)
-            logger.info("commit review posted", extra={"repo": repo, "sha": sha})
-            results.append({"sha": sha, "status": "ok"})
+            plan = {"kind": "commit_comment", "repo": repo, "sha": sha, "body": review}
+
+            # Commit reviews have no severity, so "blockers" mode always
+            # posts them directly; only "all" mode gates them.
+            should_gate_commit = gating_active() and gate_mode() == "all"
+            if should_gate_commit:
+                _warn_if_no_secret()
+                token = new_token()
+                pending.save(token, plan)
+                text = render_commit_approval_text(repo, sha, review)
+                await telegram.send_approval_message(
+                    os.getenv("TELEGRAM_CHAT_ID"), text, token
+                )
+                store.mark_reviewed(dedupe_key)
+                logger.info(
+                    "commit review held for approval", extra={"repo": repo, "sha": sha}
+                )
+                results.append({"sha": sha, "status": "pending_approval"})
+            else:
+                await execute_plan(plan)
+                store.mark_reviewed(dedupe_key)
+                logger.info("commit review posted", extra={"repo": repo, "sha": sha})
+                results.append({"sha": sha, "status": "ok"})
         except Exception:
             logger.exception(
                 "commit review failed", extra={"repo": repo, "sha": sha}
+            )
+            await notify_failure(
+                f"⚠️ <b>Commit review failed</b>\n{_esc(repo)}@{sha[:7]}"
             )
             results.append({"sha": sha, "status": "failed"})
 
@@ -214,6 +351,9 @@ async def handle_pull_request(payload):
             "pr review failed",
             extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
         )
+        await notify_failure(
+            f"⚠️ <b>PR review failed</b>\n{_esc(repo)} #{pr_number}"
+        )
         return {"status": "failed", "pr_number": pr_number}
 
 
@@ -224,6 +364,7 @@ async def run_pr_review(repo, pr_number, title, head_sha, files,
     dedupe_key = f"{repo}#{pr_number}@{head_sha}"
     review = await review_pr(title, files)
 
+    has_blocker = False
     if "findings" in review:
         if not force_post and not worth_posting(review["findings"]):
             store.mark_reviewed(dedupe_key)
@@ -250,22 +391,41 @@ async def run_pr_review(repo, pr_number, title, head_sha, files,
         body = format_body(review["summary"], unanchored, scope)
 
         if comments:
-            try:
-                await post_pr_review(repo, pr_number, head_sha, body, comments)
-            except Exception:
-                logger.exception(
-                    "inline review failed, falling back to comment",
-                    extra={"repo": repo, "pr_number": pr_number},
-                )
-                await post_pr_comment(
-                    repo, pr_number,
-                    format_body(review["summary"], review["findings"], scope),
-                )
+            plan = {
+                "kind": "pr_review_inline",
+                "repo": repo,
+                "pr_number": pr_number,
+                "head_sha": head_sha,
+                "body": body,
+                "comments": comments,
+                "fallback_body": format_body(review["summary"], review["findings"], scope),
+            }
         else:
-            await post_pr_comment(repo, pr_number, body)
-    else:
-        await post_pr_comment(repo, pr_number, review["text"])
+            plan = {"kind": "pr_comment", "repo": repo, "pr_number": pr_number, "body": body}
 
+        has_blocker = any(
+            finding.get("severity") == "blocker" for finding in review["findings"]
+        )
+    else:
+        plan = {"kind": "pr_comment", "repo": repo, "pr_number": pr_number, "body": review["text"]}
+
+    mode = gate_mode()
+    should_gate_pr = gating_active() and (mode == "all" or (mode == "blockers" and has_blocker))
+
+    if should_gate_pr:
+        _warn_if_no_secret()
+        token = new_token()
+        pending.save(token, plan)
+        text = render_pr_approval_text(repo, pr_number, title, review)
+        await telegram.send_approval_message(os.getenv("TELEGRAM_CHAT_ID"), text, token)
+        store.mark_reviewed(dedupe_key)
+        logger.info(
+            "pr review held for approval",
+            extra={"repo": repo, "pr_number": pr_number, "head_sha": head_sha},
+        )
+        return {"status": "ok", "review": "pending_approval"}
+
+    await execute_plan(plan)
     store.mark_reviewed(dedupe_key)
     logger.info(
         "pr review posted",
@@ -303,6 +463,119 @@ async def handle_issue_comment(payload):
         logger.exception(
             "rereview failed", extra={"repo": repo, "pr_number": pr_number}
         )
+        await notify_failure(
+            f"⚠️ <b>Re-review failed</b>\n{_esc(repo)} #{pr_number}"
+        )
         return {"status": "failed", "pr_number": pr_number}
+
+
+@app.post("/telegram")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(
+        default=None, alias="X-Telegram-Bot-Api-Secret-Token"
+    ),
+):
+    body = await request.body()
+
+    if not telegram.verify_webhook_secret(x_telegram_bot_api_secret_token):
+        logger.warning("invalid telegram webhook secret")
+        raise HTTPException(status_code=401, detail="invalid secret")
+
+    if not body:
+        return {"status": "skipped", "reason": "empty body"}
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return {"status": "skipped", "reason": "invalid json"}
+
+    return await handle_telegram(payload)
+
+
+async def handle_telegram(payload):
+    callback_query = payload.get("callback_query")
+    if callback_query is None:
+        return {"status": "ignored"}
+
+    cq_id = callback_query.get("id")
+    data = callback_query.get("data") or ""
+    message = callback_query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    message_id = message.get("message_id")
+    original_text = message.get("text") or ""
+
+    if str(chat_id) != os.getenv("TELEGRAM_CHAT_ID"):
+        try:
+            await telegram.answer_callback_query(cq_id, "Not authorized")
+        except Exception:
+            logger.exception("failed to answer telegram callback")
+        return {"status": "unauthorized"}
+
+    parts = data.split(":", 1)
+    if len(parts) != 2:
+        try:
+            await telegram.answer_callback_query(cq_id, "Bad request")
+        except Exception:
+            logger.exception("failed to answer telegram callback")
+        return {"status": "bad_request"}
+
+    action, token = parts
+    plan = pending.take(token)
+    if plan is None:
+        try:
+            await telegram.answer_callback_query(cq_id, "Already handled or expired")
+        except Exception:
+            logger.exception("failed to answer telegram callback")
+        return {"status": "stale"}
+
+    if action == "approve":
+        try:
+            await execute_plan(plan)
+        except Exception:
+            # The plan already left `pending` (take() popped it) and dedupe
+            # was marked at gate time — re-save it under the same token so
+            # tapping Approve again retries the post instead of losing it.
+            pending.save(token, plan)
+            logger.exception("failed to post approved review", extra={"token": token})
+            # Do NOT edit the message here: editMessageText drops the inline
+            # keyboard, and we need the Approve button to stay so the re-saved
+            # token can be retried. Just surface the failure as a toast.
+            try:
+                await telegram.answer_callback_query(
+                    cq_id, "Posting failed — tap Approve to retry"
+                )
+            except Exception:
+                logger.exception("failed to answer telegram callback")
+            return {"status": "post_failed"}
+
+        try:
+            await telegram.answer_callback_query(cq_id, "Approved ✅")
+            await telegram.edit_message_text(
+                chat_id, message_id,
+                _esc(original_text) + "\n\n✅ <b>Approved — posted to GitHub</b>",
+            )
+        except Exception:
+            logger.exception("failed to answer telegram callback")
+        logger.info("pending review approved", extra={"token": token})
+        return {"status": "approved"}
+
+    if action == "reject":
+        try:
+            await telegram.answer_callback_query(cq_id, "Rejected ❌")
+            await telegram.edit_message_text(
+                chat_id, message_id,
+                _esc(original_text) + "\n\n❌ <b>Rejected — not posted</b>",
+            )
+            logger.info("pending review rejected", extra={"token": token})
+        except Exception:
+            logger.exception("failed to process telegram rejection")
+        return {"status": "rejected"}
+
+    try:
+        await telegram.answer_callback_query(cq_id, "Unknown action")
+    except Exception:
+        logger.exception("failed to answer telegram callback")
+    return {"status": "ignored"}
 
 
