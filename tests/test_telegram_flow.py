@@ -251,13 +251,14 @@ def test_telegram_approve_posts_and_consumes_token(monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.json() == {"status": "approved"}
+    assert response.json() == {"status": "accepted"}
     mock_comment.assert_called_once_with("owner/repo", 7, "hi")
     mock_edit.assert_called_once()
     assert "Approved" in mock_edit.call_args[0][2]
 
-    # second approve: token already consumed
-    assert second.json() == {"status": "stale"}
+    # second approve: token already consumed (still visible as a side
+    # effect — the response itself is always "accepted" now)
+    assert second.json() == {"status": "accepted"}
     assert mock_comment.call_count == 1
     assert mock_answer.call_count == 2
     assert mock_answer.call_args_list[1][0] == (
@@ -265,6 +266,29 @@ def test_telegram_approve_posts_and_consumes_token(monkeypatch):
         "This review expired or was already handled — re-trigger it "
         "(e.g. /rereview on a PR) for a fresh prompt.",
     )
+
+
+def test_telegram_approve_acks_immediately_and_posts_in_background(monkeypatch):
+    # The route must ack fast (before the GitHub round-trip) so Telegram
+    # doesn't re-deliver the callback — but Starlette's TestClient still runs
+    # the background task to completion before handing back the response, so
+    # the review posts and the response reflects the accepted-not-outcome
+    # contract in the same request/response cycle from the test's view.
+    configure_telegram(monkeypatch)
+    token = main.new_token()
+    plan = {"kind": "pr_comment", "repo": "owner/repo", "pr_number": 7, "body": "hi"}
+    main.pending.save(token, plan)
+
+    with patch("main.execute_plan", new_callable=AsyncMock) as mock_execute, \
+         patch("telegram.answer_callback_query", new_callable=AsyncMock), \
+         patch("telegram.edit_message_text", new_callable=AsyncMock):
+        response = client.post(
+            "/telegram", json=callback_payload("approve", token),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted"}
+    mock_execute.assert_called_once_with(plan)
 
 
 def test_telegram_reject_does_not_post(monkeypatch):
@@ -280,7 +304,7 @@ def test_telegram_reject_does_not_post(monkeypatch):
             "/telegram", json=callback_payload("reject", token),
         )
 
-    assert response.json() == {"status": "rejected"}
+    assert response.json() == {"status": "accepted"}
     mock_comment.assert_not_called()
     mock_answer.assert_called_once()
     mock_edit.assert_called_once()
@@ -329,7 +353,7 @@ def test_telegram_wrong_chat_id_is_unauthorized(monkeypatch):
             "/telegram", json=callback_payload("approve", token, chat_id=111),
         )
 
-    assert response.json() == {"status": "unauthorized"}
+    assert response.json() == {"status": "accepted"}
     mock_comment.assert_not_called()
     mock_answer.assert_called_once()
     # plan is untouched since we never consumed it for an unauthorized chat
@@ -340,7 +364,7 @@ def test_telegram_non_callback_update_is_ignored(monkeypatch):
     configure_telegram(monkeypatch)
     response = client.post("/telegram", json={"message": {"text": "hi"}})
 
-    assert response.json() == {"status": "ignored"}
+    assert response.json() == {"status": "accepted"}
 
 
 def test_telegram_stale_token_reports_stale(monkeypatch):
@@ -350,7 +374,7 @@ def test_telegram_stale_token_reports_stale(monkeypatch):
             "/telegram", json=callback_payload("approve", "does-not-exist"),
         )
 
-    assert response.json() == {"status": "stale"}
+    assert response.json() == {"status": "accepted"}
     mock_answer.assert_called_once()
 
 
@@ -368,7 +392,7 @@ def test_telegram_approve_post_failure_resaves_plan_for_retry(monkeypatch):
             "/telegram", json=callback_payload("approve", token),
         )
 
-    assert response.json() == {"status": "post_failed"}
+    assert response.json() == {"status": "accepted"}
     mock_answer.assert_called_once_with("cbq1", "Posting failed — tap Approve to retry")
     # The message is NOT edited on failure: editMessageText would drop the
     # inline keyboard, and the Approve button must stay so the re-saved token
@@ -393,7 +417,7 @@ def test_telegram_approve_escapes_original_text_before_reediting(monkeypatch):
             json=callback_payload("approve", token, text=malicious_text),
         )
 
-    assert response.json() == {"status": "approved"}
+    assert response.json() == {"status": "accepted"}
     edited_text = mock_edit.call_args[0][2]
     assert "<a href" not in edited_text
     assert "&lt;a href" in edited_text
