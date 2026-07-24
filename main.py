@@ -542,7 +542,11 @@ async def handle_telegram(payload):
     plan = pending.take(token)
     if plan is None:
         try:
-            await telegram.answer_callback_query(cq_id, "Already handled or expired")
+            await telegram.answer_callback_query(
+                cq_id,
+                "This review expired or was already handled — re-trigger it "
+                "(e.g. /rereview on a PR) for a fresh prompt.",
+            )
         except Exception:
             logger.exception("failed to answer telegram callback")
         return {"status": "stale"}

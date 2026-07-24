@@ -260,7 +260,11 @@ def test_telegram_approve_posts_and_consumes_token(monkeypatch):
     assert second.json() == {"status": "stale"}
     assert mock_comment.call_count == 1
     assert mock_answer.call_count == 2
-    assert mock_answer.call_args_list[1][0] == ("cbq1", "Already handled or expired")
+    assert mock_answer.call_args_list[1][0] == (
+        "cbq1",
+        "This review expired or was already handled — re-trigger it "
+        "(e.g. /rereview on a PR) for a fresh prompt.",
+    )
 
 
 def test_telegram_reject_does_not_post(monkeypatch):
