@@ -173,7 +173,15 @@ async def review_commit(commit_message: str, files: list):
     return review
 
 
-PR_SYSTEM_PROMPT = "You are a senior code reviewer. Respond only with valid JSON."
+PR_SYSTEM_PROMPT = (
+    "You are a staff software engineer doing a focused, high-signal code review. "
+    "Respond only with valid JSON. Be concrete and specific: name the exact symbol or "
+    "expression, state the precise consequence (what breaks, under which input or "
+    "condition), and give an actionable fix. Never give generic advice like 'consider "
+    "adding error handling' or 'make sure to validate input' — say exactly what to handle, "
+    "where, and why. Report only real problems, ranked by impact; skip stylistic nitpicks "
+    "unless they affect correctness or clarity."
+)
 
 PR_SCHEMA = """{
   "summary": "2-3 sentence overall assessment",
@@ -217,8 +225,19 @@ Respond with JSON matching exactly this schema:
 Rules:
 - "file" must be one of the changed file paths shown above.
 - "line" must be a line number of the new version of the file, visible in its patch.
-- "severity": "blocker" = must fix, "warning" = should fix, "nit" = optional polish.
-- Don't invent issues. If there is nothing to flag, return an empty findings list."""
+- "severity": "blocker" = will cause incorrect behavior, a crash, data loss, or a security
+  issue; "warning" = a real bug or risk that should be fixed; "nit" = minor polish. Do not
+  inflate severity.
+- Each "comment" must do three things: (1) name the specific code, (2) state the concrete
+  failure — the input or condition that triggers it and what goes wrong, (3) give a specific
+  fix. Avoid hedging verbs ("consider", "make sure", "it might be good to").
+- Don't invent issues. If there is nothing to flag, return an empty findings list.
+
+Example of the required specificity:
+- Weak (do NOT write like this): "Watch out for a possible off-by-one here."
+- Strong (write like this): "The loop runs while i <= items.size(), so the last iteration
+  calls items.get(items.size()) and throws IndexOutOfBoundsException on every non-empty
+  list; change the bound to i < items.size()." """
     return prompt
 
 

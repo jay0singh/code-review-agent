@@ -103,6 +103,18 @@ def test_prompt_mentions_omitted_files():
     assert "1 file(s) were omitted" in prompt
 
 
+def test_pr_system_prompt_demands_specificity():
+    assert "staff software engineer" in reviewer.PR_SYSTEM_PROMPT
+    assert "Be concrete and specific" in reviewer.PR_SYSTEM_PROMPT
+
+
+def test_pr_prompt_demands_specificity():
+    prompt = reviewer.build_pr_prompt("title", [make_file("a.py", 10)], [])
+
+    assert "name the specific code" in prompt
+    assert "change the bound to i < items.size()" in prompt
+
+
 async def test_model_is_env_configurable(monkeypatch):
     monkeypatch.setattr(reviewer, "REVIEW_MODEL", "custom-model")
     client = mock_groq()
