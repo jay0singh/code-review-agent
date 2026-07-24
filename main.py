@@ -5,7 +5,7 @@ import json
 import os
 from collections import Counter
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from dotenv import load_dotenv
 
 import telegram
@@ -490,6 +490,7 @@ async def handle_issue_comment(payload):
 @app.post("/telegram")
 async def telegram_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(
         default=None, alias="X-Telegram-Bot-Api-Secret-Token"
     ),
@@ -508,7 +509,15 @@ async def telegram_webhook(
     except json.JSONDecodeError:
         return {"status": "skipped", "reason": "invalid json"}
 
-    return await handle_telegram(payload)
+    # Ack Telegram immediately: the GitHub round-trip inside handle_telegram
+    # is slow enough that Telegram will re-deliver the callback (causing
+    # duplicate posts and a confusing "already handled" toast) if we make it
+    # wait for the full flow to finish. The pop-once pending token still
+    # guards against genuine duplicate deliveries; the user-facing outcome
+    # is delivered via answerCallbackQuery / editMessageText from the
+    # background task itself.
+    background_tasks.add_task(handle_telegram, payload)
+    return {"status": "accepted"}
 
 
 async def handle_telegram(payload):
@@ -542,7 +551,11 @@ async def handle_telegram(payload):
     plan = pending.take(token)
     if plan is None:
         try:
-            await telegram.answer_callback_query(cq_id, "Already handled or expired")
+            await telegram.answer_callback_query(
+                cq_id,
+                "This review expired or was already handled — re-trigger it "
+                "(e.g. /rereview on a PR) for a fresh prompt.",
+            )
         except Exception:
             logger.exception("failed to answer telegram callback")
         return {"status": "stale"}
