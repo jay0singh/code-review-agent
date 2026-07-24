@@ -153,14 +153,22 @@ async def notify_failure(text: str):
         logger.exception("failed to send telegram failure notification")
 
 
-def render_pr_approval_text(repo, pr_number, title, review) -> str:
+def render_pr_approval_text(repo, pr_number, title, review, head_branch=None, base_branch=None) -> str:
     """Concise HTML summary of a pending PR review, for the Telegram
     approval prompt. Kept well under Telegram's 4096-char message limit."""
-    lines = [
-        "🔎 <b>PR review awaiting approval</b>",
-        f"{_esc(repo)} #{pr_number}: {_esc(title)}",
-        "",
-    ]
+    if head_branch and base_branch:
+        lines = [
+            "🔎 <b>PR review awaiting approval</b>",
+            f"{_esc(repo)} #{pr_number} ({_esc(head_branch)} → {_esc(base_branch)})",
+            _esc(title),
+            "",
+        ]
+    else:
+        lines = [
+            "🔎 <b>PR review awaiting approval</b>",
+            f"{_esc(repo)} #{pr_number}: {_esc(title)}",
+            "",
+        ]
     if "findings" in review:
         lines.append(_esc(review["summary"]))
         counts = Counter(finding.get("severity") for finding in review["findings"])
@@ -315,6 +323,8 @@ async def handle_pull_request(payload):
         return {"status": "skipped", "reason": "draft pr"}
 
     head_sha = pr.get("head", {}).get("sha")
+    head_branch = pr.get("head", {}).get("ref")
+    base_branch = pr.get("base", {}).get("ref")
     dedupe_key = f"{repo}#{pr_number}@{head_sha}"
     if store.already_reviewed(dedupe_key):
         return {"status": "skipped", "reason": "duplicate delivery"}
@@ -347,7 +357,10 @@ async def handle_pull_request(payload):
         if is_doc_only(filenames):
             return {"status": "skipped", "reason": "doc only"}
 
-        return await run_pr_review(repo, pr_number, title, head_sha, files, scope)
+        return await run_pr_review(
+            repo, pr_number, title, head_sha, files, scope,
+            head_branch=head_branch, base_branch=base_branch,
+        )
     except Exception:
         logger.exception(
             "pr review failed",
@@ -360,7 +373,7 @@ async def handle_pull_request(payload):
 
 
 async def run_pr_review(repo, pr_number, title, head_sha, files,
-                        scope=None, force_post=False):
+                        scope=None, force_post=False, head_branch=None, base_branch=None):
     """Review the given files and post the outcome to the PR. force_post
     bypasses severity quietness — used when a human explicitly asked."""
     dedupe_key = f"{repo}#{pr_number}@{head_sha}"
@@ -418,7 +431,7 @@ async def run_pr_review(repo, pr_number, title, head_sha, files,
         _warn_if_no_secret()
         token = new_token()
         pending.save(token, plan)
-        text = render_pr_approval_text(repo, pr_number, title, review)
+        text = render_pr_approval_text(repo, pr_number, title, review, head_branch, base_branch)
         await telegram.send_approval_message(os.getenv("TELEGRAM_CHAT_ID"), text, token)
         store.mark_reviewed(dedupe_key)
         logger.info(
@@ -454,12 +467,15 @@ async def handle_issue_comment(payload):
     try:
         pr = await fetch_pr(repo, pr_number)
         head_sha = pr.get("head", {}).get("sha")
+        head_branch = pr.get("head", {}).get("ref")
+        base_branch = pr.get("base", {}).get("ref")
         files = await fetch_pr_diff(repo, pr_number)
         logger.info(
             "rereview requested", extra={"repo": repo, "pr_number": pr_number}
         )
         return await run_pr_review(
-            repo, pr_number, pr.get("title", ""), head_sha, files, force_post=True
+            repo, pr_number, pr.get("title", ""), head_sha, files, force_post=True,
+            head_branch=head_branch, base_branch=base_branch,
         )
     except Exception:
         logger.exception(

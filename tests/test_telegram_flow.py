@@ -121,6 +121,29 @@ async def test_pr_review_gated_blockers_mode_posts_warning_only_directly(monkeyp
     mock_send.assert_not_called()
 
 
+def test_render_pr_approval_text_without_branches_uses_single_line_format():
+    text = main.render_pr_approval_text(
+        "owner/repo", 7, "Add feature", {"summary": "ok", "findings": []}
+    )
+    assert "owner/repo #7: Add feature" in text
+    assert "→" not in text
+
+
+async def test_pr_review_branches_included_in_approval_text(monkeypatch):
+    configure_telegram(monkeypatch, gate_mode="all")
+    with patch("main.review_pr", new_callable=AsyncMock, return_value=review_with_finding()), \
+         patch("telegram.send_approval_message", new_callable=AsyncMock) as mock_send:
+        result = await main.run_pr_review(
+            "owner/repo", 7, "Add feature", "abc123", FILES,
+            head_branch="feature/x", base_branch="main",
+        )
+
+    assert result == {"status": "ok", "review": "pending_approval"}
+    mock_send.assert_called_once()
+    _, text, _ = mock_send.call_args[0]
+    assert "feature/x → main" in text
+
+
 async def test_pr_review_unconfigured_posts_directly(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -442,7 +465,8 @@ def pr_payload(action="opened", draft=False, head_sha="abc123", before=None):
         "pull_request": {
             "title": "Add feature",
             "draft": draft,
-            "head": {"sha": head_sha},
+            "head": {"sha": head_sha, "ref": "feature/x"},
+            "base": {"ref": "main"},
         },
     }
     if before:
@@ -514,6 +538,19 @@ async def test_pr_review_failure_unconfigured_does_not_notify(monkeypatch):
 
     assert result == {"status": "failed", "pr_number": 7}
     mock_notify.assert_not_called()
+
+
+async def test_handle_pull_request_threads_branches_into_approval_text(monkeypatch):
+    configure_telegram(monkeypatch, gate_mode="all")
+    with patch("main.fetch_pr_diff", new_callable=AsyncMock, return_value=FILES), \
+         patch("main.review_pr", new_callable=AsyncMock, return_value=review_with_finding()), \
+         patch("telegram.send_approval_message", new_callable=AsyncMock) as mock_send:
+        result = await main.handle_pull_request(pr_payload())
+
+    assert result == {"status": "ok", "review": "pending_approval"}
+    mock_send.assert_called_once()
+    _, text, _ = mock_send.call_args[0]
+    assert "→ main" in text
 
 
 async def test_notify_failure_swallows_telegram_errors(monkeypatch):
