@@ -90,7 +90,7 @@ empty or not valid JSON (e.g. GitHub ping deliveries).
    `.json`, `.txt`, `.text`).
 2. For each remaining commit, it fetches the diff from the GitHub API
    (`GET /repos/{full_name}/commits/{sha}`).
-3. The diff and commit message are sent to Groq (`llama-3.3-70b-versatile`
+3. The diff and commit message are sent to Groq (`openai/gpt-oss-120b`
    by default; override with `REVIEW_MODEL` in `.env`)
    for review.
 4. The review is posted back as a commit comment
