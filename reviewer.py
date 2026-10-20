@@ -7,7 +7,7 @@ from groq import APIStatusError, AsyncGroq, RateLimitError
 
 load_dotenv()
 
-REVIEW_MODEL = os.getenv("REVIEW_MODEL", "llama-3.3-70b-versatile")
+REVIEW_MODEL = os.getenv("REVIEW_MODEL", "openai/gpt-oss-120b")
 MAX_DIFF_CHARS = int(os.getenv("MAX_DIFF_CHARS", "80000"))
 
 SYSTEM_PROMPT = "You are a senior code reviewer"
